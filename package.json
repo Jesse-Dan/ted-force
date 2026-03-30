@@ -1,0 +1,23 @@
+{
+  "name": "digitwhale_tuul_service_v2",
+  "version": "1.0.0",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "node dist/main.js",
+    "dev": "fragment serve",
+    "build": "fragment build",
+    "test": "fragment test",
+    "lint": "fragment lint"
+  },
+  "dependencies": {
+    "fragment-ts": "^3.0.0",
+    "reflect-metadata": "^0.1.13",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "@types/node": "^20.10.5",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0"
+  }
+}

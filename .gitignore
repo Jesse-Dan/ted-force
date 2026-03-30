@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+coverage/
+
+# Environment files
+.env
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log
+
+# Database
+*.sqlite
+*.db
+
+# Editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sw?
+.DS_Store
+
+# Misc
+.DS_Store
