@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<agent branch="main">
+  <name>Bring</name>
+  <slug>bring</slug>
+  <version>1.0.0</version>
+  <description></description>
+  <overview></overview>
+  <tools>
+    <!-- no tools -->
+  </tools>
+</agent>

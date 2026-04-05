@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent": {
+    "id": "d9e7ef2c-7a4a-4a1d-bc5f-dcc6fad0d94d",
+    "name": "Bring",
+    "slug": "bring",
+    "description": "",
+    "domainLabel": null,
+    "version": "1.0.0"
+  },
+  "config": null,
+  "parameter": null,
+  "tools": []
+}
