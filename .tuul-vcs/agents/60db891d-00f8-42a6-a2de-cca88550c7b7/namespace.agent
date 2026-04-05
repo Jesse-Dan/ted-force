@@ -1,0 +1,4 @@
+namespace sed
+agent "Sed"
+branch "main"
+version "1.0.0"

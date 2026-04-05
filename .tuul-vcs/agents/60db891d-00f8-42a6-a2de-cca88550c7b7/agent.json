@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent": {
+    "id": "60db891d-00f8-42a6-a2de-cca88550c7b7",
+    "name": "Sed",
+    "slug": "sed",
+    "description": "",
+    "domainLabel": null,
+    "version": "1.0.0"
+  },
+  "config": null,
+  "parameter": null,
+  "tools": []
+}
