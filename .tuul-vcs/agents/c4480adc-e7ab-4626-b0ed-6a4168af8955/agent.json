@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent": {
+    "id": "c4480adc-e7ab-4626-b0ed-6a4168af8955",
+    "name": "Dbass",
+    "slug": "dbass",
+    "description": "",
+    "domainLabel": null,
+    "version": "1.0.0"
+  },
+  "config": null,
+  "parameter": null,
+  "tools": []
+}
