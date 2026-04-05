@@ -1,0 +1,4 @@
+namespace customer-service-agent
+agent "Customer Service Agent"
+branch "main"
+version "1.0.0"
