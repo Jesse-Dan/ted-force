@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent": {
+    "id": "1cfc9578-e04a-4f53-a5d9-ca7fb2e076c5",
+    "name": "Jesse Emulator",
+    "slug": "jesse-emulator",
+    "description": "",
+    "domainLabel": null,
+    "version": "1.0.0"
+  },
+  "config": null,
+  "parameter": null,
+  "tools": []
+}

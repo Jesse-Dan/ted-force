@@ -1,0 +1,12 @@
+{
+  "managedFiles": [
+    "agent.json",
+    "agent.xml",
+    "namespace.agent",
+    ".gitignore",
+    "README.md",
+    ".tuul-manifest.json"
+  ],
+  "branch": "main",
+  "generatedAt": "2026-04-05T12:04:20.604Z"
+}
