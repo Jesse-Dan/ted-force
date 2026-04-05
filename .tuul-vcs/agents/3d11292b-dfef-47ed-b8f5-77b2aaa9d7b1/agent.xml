@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<agent branch="main">
+  <name>Customer Service Agent</name>
+  <slug>customer-service-agent</slug>
+  <version>1.0.0</version>
+  <description>Agent 1</description>
+  <overview></overview>
+  <tools>
+    <!-- no tools -->
+  </tools>
+</agent>

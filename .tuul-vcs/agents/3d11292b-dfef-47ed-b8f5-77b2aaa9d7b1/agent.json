@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent": {
+    "id": "3d11292b-dfef-47ed-b8f5-77b2aaa9d7b1",
+    "name": "Customer Service Agent",
+    "slug": "customer-service-agent",
+    "description": "Agent 1",
+    "domainLabel": null,
+    "version": "1.0.0"
+  },
+  "config": null,
+  "parameter": null,
+  "tools": []
+}
