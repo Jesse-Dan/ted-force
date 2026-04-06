@@ -1,8 +1,8 @@
-import { Service } from 'fragment-ts';
+import { Service } from "fragment-ts";
 
 @Service()
 export class AppService {
-  getMessage(): string {
-    return 'Digitwhale TUUL Service v2 is running.';
+  getName(): string {
+    return "digitwhale_tuul_service_v2";
   }
 }

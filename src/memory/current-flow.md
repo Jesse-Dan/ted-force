@@ -1,0 +1,324 @@
+# Current flow
+
+## Goal
+
+Build TUUL v2 in Fragment while gradually replicating and replacing v1 Express logic.
+
+## Naming decision
+
+- v1 `project` maps to v2 `agent`
+
+## Current approach
+
+1. Define the intended Fragment architecture first.
+2. Track v1 to v2 parity in a migration registry.
+3. Scaffold modules before moving logic.
+4. Migrate low-coupling domains first.
+5. Move high-risk runtime domains after shared patterns are stable.
+
+## Current next steps
+
+1. Review and refine the first-pass foundational entities.
+2. Implement the next entity wave around `AgentEnvironmentVariable`, `StoredFile`, and `AgentInstance`.
+3. Add shared auth, org-context, and response patterns.
+4. Scaffold the `agent` module around the new entities.
+5. Begin with a low-risk parity slice like `status` or `organization`.
+
+## Completed in this phase
+
+- full intended Fragment module skeleton created
+- `src/memory` established for process tracking
+- v1 entity audit documented
+- first-pass foundational v2 entities implemented:
+  - `UserAccount`
+  - `Organization`
+  - `OrganizationMembership`
+  - `Agent`
+  - `AgentConfig`
+- second entity wave implemented:
+  - `AgentEnvironmentVariable`
+  - `StoredFile`
+  - `AgentInstance`
+  - `AgentVersionEntry`
+  - `AgentTool`
+  - `ToolMemoryEntry`
+- support and reference entity wave implemented:
+  - `AgentParameter`
+  - `VoiceProfile`
+  - `CapabilityProfile`
+  - `CapabilityToolPolicy`
+  - `ContextRuleSet`
+  - `AgentAnalytics`
+  - `Asset`
+  - `ExternalResource`
+  - `DataSourceConnection`
+  - `DomainTemplate`
+  - `OrganizationHealth`
+  - `OrganizationProfile`
+  - `OrganizationInvitation`
+  - `PlatformTool`
+  - `WaitlistEntry`
+- runtime and observability entity wave implemented:
+  - `RuntimeRun`
+  - `RuntimeMessage`
+  - `ApiCallLog`
+  - `ActivityLog`
+  - `AwarenessRecord`
+  - `TokenUsageSession`
+  - `BillingLedgerEntry`
+  - `BillingReport`
+- removed empty Fragment `*Module` placeholder files
+- added AI SDK-native core bundling layer for:
+  - message bundling
+  - parameter bundling
+  - tool bundling
+  - runtime payload assembly
+  - SSE event writing
+- extended tool bundling so agent runtimes can bundle:
+  - enabled platform tools allowed by capability policy
+  - enabled agent tools
+- first runtime vertical slice implemented:
+  - loads `AgentConfig`
+  - loads latest `AgentParameter` and `CapabilityProfile`
+  - loads enabled `PlatformTool` and `AgentTool`
+  - builds the AI SDK request
+  - responds through the SSE layer
+- runtime request payloads now use Fragment DTO classes for validation
+- runtime has a `mock` flag for SSE test responses without calling a live model
+- stateful agent runtime now loads conversation history from persisted entities instead of request payloads
+- new persisted conversation entities added:
+  - `AgentConversation`
+  - `AgentConversationVersion`
+  - `AgentConversationMessage`
+- runtime now accepts lightweight per-request controls:
+  - `fileIds`
+  - `reasoning`
+  - `webSearch`
+- linked conversation files are now resolved back into runtime model context automatically
+- runtime file resolution and attachment linkage are now split into dedicated modular services and repository methods
+- files module now supports raw upload-to-file-id ingestion with parsing for:
+  - text
+  - pdf
+  - docx
+- public waitlist intake now runs through an SSE response path and captures sender request context
+- public agent session bootstrap now creates persisted conversations over SSE
+- organization invitation onboarding now returns SSE progress and creates membership state
+- internal file attachments can now be linked to persisted conversation messages
+- module structure normalized with `contracts`, `dto`, and `repositories` directories across all current modules
+- repository scaffolding expanded across modules for:
+  - `agent`
+  - `api-runtime`
+  - `auth`
+  - `config`
+  - `environment`
+  - `files`
+  - `organization`
+  - `public`
+  - `tools`
+- runtime persistence added to the SSE runtime path:
+  - creates `RuntimeRun`
+  - persists inbound and assistant `RuntimeMessage` records
+  - records `TokenUsageSession` when usage is available
+  - writes `ApiCallLog`
+- MySQL compatibility sweep completed across the entity layer for:
+  - duplicate one-to-one unique indexes caused by `unique: true` on relation foreign keys
+  - unsupported inferred `Object` column types
+  - unsupported `json` / `text` / `longtext` / `simple-array` default values
+  - nullable array/text fields now rely on app-level defaults instead of database defaults
+- controller and service surface expanded using v1 as a parity reference:
+  - management endpoints added for `agent`, `auth`, `config`, `environment`, `tools`, `organization`, and `onboarding`
+  - missing module folders and controllers added for:
+    - `analytics`
+    - `api`
+    - `assets_and_resources`
+    - `billing`
+    - `credit_management`
+    - `data_source`
+    - `log`
+    - `marketplace`
+    - `mcp`
+    - `sdk`
+    - `status`
+    - `test`
+    - `waitlist`
+    - `version_control`
+  - real entity-backed read endpoints now exist for:
+    - analytics
+    - api call logs
+    - assets
+    - external resources
+    - billing ledger and reports
+    - data sources
+    - activity logs
+    - internal waitlist access
+    - version-control instances and version entries
+  - placeholder module endpoints now exist for:
+    - `credit_management`
+    - `mcp`
+    - `test`
+- module internals are being refactored toward smaller pieces instead of large services:
+  - query and command services now split for:
+    - `assets_and_resources`
+    - `analytics`
+    - `billing`
+    - `data_source`
+    - `version_control`
+- write-capable endpoints now exist for:
+  - `assets_and_resources`
+    - create asset
+    - create external resource
+  - `analytics`
+    - upsert agent analytics
+  - `billing`
+    - create ledger entry
+    - create billing report
+  - `data_source`
+    - create connection
+    - update connection
+    - delete connection
+  - `version_control`
+    - create agent instance
+    - create version entry
+- version control reviewed against v1 behavior:
+  - v1 commit hashes were used as generated snapshot references, not true content-addressed git hashes
+  - committing cloned the live parameter/tool lane into a hash-linked snapshot
+  - reverting promoted a selected snapshot back into the live lane
+- v2 version control now supports:
+  - commit snapshot generation for an instance
+  - fetch snapshot by commit hash
+  - diff by commit hashes
+  - diff by instances
+- version control now also supports lifecycle orchestration across modules:
+  - publish instance into the current/public lane
+  - revert instance snapshot back into the live agent parameter/tool lane
+  - runtime can bundle and execute from:
+    - live lane
+    - specific `commitHash`
+    - specific `instanceId`
+- remaining scaffold controllers replaced with working module behavior:
+  - `test`
+    - mock SSE runtime execution for an agent, including commit/instance targeting
+  - `mcp`
+    - local MCP server directory discovery and public URL exposure
+  - `sdk`
+    - prompt handoff, conversation listing, message listing, resource lookup
+  - `marketplace`
+    - public agent listing surface
+  - `credit_management`
+    - organization credit and token usage summary endpoint
+- v1 parity surface expanded substantially across thin or missing modules:
+  - `preferences`
+    - restored modular parameter/capability/persona/niche/voice-tone/overview/context routes
+    - preferences now hydrate and persist the live `AgentParameter` graph
+  - `organization`
+    - added update/delete, invitation revoke/verify, add/remove member, role update, ownership transfer, and access selection routes
+  - `tools`
+    - added update, test, keyword discovery, and tool-memory routes
+  - `files`
+    - added agent/session listing, lookup, search, expired listing, delete, and activation-state routes
+  - `public`
+    - implemented `public/domains` and `public/status`
+  - `config`
+    - added API key regenerate/revoke flows
+  - `agent`
+    - added duplicate and delete flows
+  - `api`
+    - restored higher-level runtime surfaces for generate, litegen, history, messages, and trigger over the v2 SSE runtime
+  - `sdk`
+    - added agent-scoped prompt plus resources/run-message lookup routes
+  - `credit_management`
+    - added billing history and usage routes
+  - `analytics`
+    - added post/patch/delete compatibility routes around the existing upsert model
+  - `assets_and_resources`
+    - added by-id lookup and delete routes for assets/resources
+  - `mcp`
+    - stopped returning raw directories in list responses and added safe absolute-path to public-url resolution
+  - `auth`
+    - added org-role lookup surface
+  - `billing`
+    - added billing-history compatibility route alias
+- cross-cutting HTTP pipeline layer added and applied across controller surfaces:
+  - `RequestContextHolder`
+    - async-local request state holder for request id, user/org/agent/session/conversation ids, path, ip, and timing
+  - middlewares
+    - `RequestContextMiddleware`
+      - initializes request-scoped state and stamps `x-request-id`
+  - guards
+    - `AuthGuard`
+      - resolves public-vs-managed access and binds user identity into request context
+    - `OrganizationGuard`
+      - resolves organization context from params/body/query/headers
+    - `AgentAccessGuard`
+      - resolves agent/session/conversation context from params/body/query/headers
+  - interceptors
+    - `RequestTracingInterceptor`
+      - writes request/trace headers like request id, org id, and agent id
+    - `TimingInterceptor`
+      - writes response timing metadata
+  - pipeline decorators
+    - `UseRequestContextPipeline`
+      - base request-context middleware plus tracing/timing interceptors for public or health-style surfaces
+    - `UseManagedRequestPipeline`
+      - base request-context pipeline plus managed auth
+    - `UseOrganizationRequestPipeline`
+      - managed pipeline plus organization resolution
+    - `UseAgentRequestPipeline`
+      - request-context pipeline plus agent/session/conversation resolution for runtime-like surfaces
+    - `UseAgentManagementPipeline`
+      - managed pipeline plus agent resolution for authenticated agent management surfaces
+- pipeline decorators are now applied by controller intent instead of one blanket decorator:
+  - public, onboarding, mcp, app, and status controllers use `UseRequestContextPipeline`
+  - auth and internal waitlist use `UseManagedRequestPipeline`
+  - organization, billing, and credit management use `UseOrganizationRequestPipeline`
+  - runtime/api/test/sdk/marketplace surfaces use `UseAgentRequestPipeline`
+  - agent management, files, tools, config, preferences, version control, analytics, assets/resources, data source, environment, and logs use `UseAgentManagementPipeline`
+- billing/public pricing slice:
+  - added `BillingCatalogService` to move the static pricing/billing metric model out of the frontend and into v2
+  - added `GET /public/billing/catalog` through `PublicBillingController`
+  - the catalog returns plan metadata, billing metric definitions, and backend-calculated preview monthly costs
+- first v1-style jobs were scaffolded with `frg make:job` and wired to real services:
+  - `BillingCycleJob`
+  - `DebtRecoveryJob`
+  - `OrganizationHealthSyncJob`
+  - all three delegate into `BillingAutomationService`
+  - billing automation currently writes v2 billing ledger/report snapshots and syncs organization health records as a first parity step
+- billing automation has now been deepened toward v1 parity:
+  - added `BillingUsageService`
+    - computes organization usage for:
+      - public instances
+      - created instances
+      - tools
+      - data sources
+      - seats
+      - agents
+      - agent assets
+      - agent resources
+      - env vars
+      - memory/awareness
+      - ai helper proxy usage
+  - `BillingAutomationService` now prices usage by `BillableItem` with v1-aligned hourly rates/included units instead of placeholder agent/seat-only math
+- job runtime visibility added:
+  - added persisted `JobExecution` entity and repository
+  - `JobRuntimeService` now writes durable job execution records instead of keeping state only in memory
+  - all generated jobs now mark running/completed/failed state with persisted execution metadata
+  - Fragment cron schedules added:
+    - `billing-cycle` at `0 * * * *`
+    - `debt-recovery` at `15 * * * *`
+    - `organization-health-sync` at `30 * * * *`
+  - `/status` now includes latest persisted job execution state
+- billing query surface expanded:
+  - added `GET /billing/organizations/:organizationId/overview`
+  - exposes plan, health, current usage snapshot, latest ledger entry, latest reports, and ledger history
+- request context is now used in runtime persistence and intake flows:
+  - runtime `ApiCallLog` records now capture request id, ip, and user agent from the shared context
+  - runtime run lifecycle now writes `ActivityLog` entries for start/completion/failure with request metadata
+  - public waitlist intake now preserves request id/session/conversation ids from the shared context
+- Frontend integration now normalizes v2 billing history into the legacy `BillingEntity` shape in the web service layer, so the existing billing history UI can render backend data without a UI rewrite.
+- Frontend status page now reads v2 `/status` directly and maps persisted job execution records into the older status-page service model.
+- File storage now uses the AWS S3 SDK against the MinIO-compatible endpoint, with object keys stored under `tuul/<agent-id>/...` via bucket `tuul` and per-agent folder scoping.
+- File ingestion no longer stores `inline://` placeholders; uploaded files now persist to object storage and database records keep the object key in `publicId` plus a durable retrieval URL in `fileUrl`.
+- Explicit file access handling has been added:
+  - `GET /files/:fileId/url`
+  - `GET /files/:fileId/download`
+  - both now resolve object-backed access metadata from the backend for frontend retrieval flows
