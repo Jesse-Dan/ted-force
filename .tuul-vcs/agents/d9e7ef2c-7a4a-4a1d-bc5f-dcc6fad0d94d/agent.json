@@ -30,7 +30,10 @@
   },
   "parameter": {
     "persona": [],
-    "niche": null,
+    "niche": {
+      "name": "new name",
+      "gender": ""
+    },
     "overview": null,
     "documentation": null,
     "corePrompts": [],
