@@ -1,6 +1,7 @@
 {
   "managedFiles": [
     "agent.json",
+    "example.agent.json",
     "agent.xml",
     "namespace.agent",
     ".gitignore",
@@ -9,6 +10,6 @@
     "tools/get-posts.json",
     "tools/get-posts.ts"
   ],
-  "branch": "main",
-  "generatedAt": "2026-04-06T06:08:53.055Z"
+  "branch": "prod",
+  "generatedAt": "2026-04-06T06:45:18.577Z"
 }
