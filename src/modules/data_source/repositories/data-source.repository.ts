@@ -23,6 +23,12 @@ export class DataSourceRepository {
     return this.dataSourceRepository.save(input);
   }
 
+  async saveMany(
+    inputs: Partial<DataSourceConnection>[],
+  ): Promise<DataSourceConnection[]> {
+    return this.dataSourceRepository.save(inputs);
+  }
+
   async findById(dataSourceId: string): Promise<DataSourceConnection | null> {
     return this.dataSourceRepository.findOne({
       where: { id: dataSourceId },
@@ -31,5 +37,9 @@ export class DataSourceRepository {
 
   async deleteById(dataSourceId: string): Promise<void> {
     await this.dataSourceRepository.delete(dataSourceId);
+  }
+
+  async deleteByAgentId(agentId: string): Promise<void> {
+    await this.dataSourceRepository.delete({ agentId });
   }
 }

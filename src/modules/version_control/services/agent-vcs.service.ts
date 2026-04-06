@@ -1,6 +1,6 @@
 import { Autowired, Service } from "fragment-ts";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import simpleGit from "simple-git";
 import { Agent, type AgentMetadata } from "../../../entities/agent.entity";
@@ -8,6 +8,9 @@ import { type AgentConfig } from "../../../entities/agent-config.entity";
 import { type AgentInstance } from "../../../entities/agent-instance.entity";
 import { type AgentParameter } from "../../../entities/agent-parameter.entity";
 import { type AgentTool } from "../../../entities/agent-tool.entity";
+import { type Asset } from "../../../entities/asset.entity";
+import { type DataSourceConnection } from "../../../entities/data-source-connection.entity";
+import { type ExternalResource } from "../../../entities/external-resource.entity";
 import { CodeHelper } from "../../../common/helpers/code.helper";
 import { InstanceProjection } from "../../../entities/enums/instance-projection.enum";
 import { InstanceReference } from "../../../entities/enums/instance-reference.enum";
@@ -16,6 +19,9 @@ import { AgentRepository } from "../../agent/repositories/agent.repository";
 import { AgentConfigRepository } from "../../config/repositories/agent-config.repository";
 import { OrganizationRepository } from "../../organization/repositories/organization.repository";
 import { OrganizationRepositoryConnectionRepository } from "../../organization/repositories/organization-repository-connection.repository";
+import { AssetRepository } from "../../assets_and_resources/repositories/asset.repository";
+import { ExternalResourceRepository } from "../../assets_and_resources/repositories/external-resource.repository";
+import { DataSourceRepository } from "../../data_source/repositories/data-source.repository";
 import { AgentInstanceRepository } from "../repositories/agent-instance.repository";
 import { AgentParameterVersionRepository } from "../repositories/agent-parameter-version.repository";
 import { AgentRepositoryConnectionRepository } from "../repositories/agent-repository-connection.repository";
@@ -65,6 +71,28 @@ type SnapshotShape = {
     stateManagement?: any;
     safetyPolicy?: any;
     trigger?: any;
+  }>;
+  assets: Array<{
+    name: string;
+    type: string;
+    size: number;
+    url: string;
+    tags?: string[];
+  }>;
+  sources: Array<{
+    name: string;
+    url: string;
+    description: string;
+    category: string;
+  }>;
+  datasources: Array<{
+    name: string;
+    type: string;
+    config?: Record<string, unknown> | null;
+  }>;
+  mcps: Array<{
+    slug: string;
+    config?: Record<string, unknown> | null;
   }>;
 };
 
@@ -144,6 +172,15 @@ export class AgentVcsService {
 
   @Autowired()
   private agentToolVersionRepository!: AgentToolVersionRepository;
+
+  @Autowired()
+  private assetRepository!: AssetRepository;
+
+  @Autowired()
+  private externalResourceRepository!: ExternalResourceRepository;
+
+  @Autowired()
+  private dataSourceRepository!: DataSourceRepository;
 
   async bootstrapAgentRepository(
     agentId: string,
@@ -333,6 +370,11 @@ export class AgentVcsService {
       const snapshot = await this.getBranchHeadSnapshot(agentId, branch.id);
       if (snapshot) {
         await this.applySnapshot(agent, snapshot);
+        await this.syncRepositoryRepresentations(
+          this.getRepoPath(agentId),
+          snapshot,
+          branch.version.gitBranch ?? branch.version.version,
+        );
       }
 
       const branches =
@@ -1100,6 +1142,7 @@ export class AgentVcsService {
       const snapshot = await this.readSnapshotFromRepo(repoPath);
       if (snapshot) {
         await this.applySnapshot(agent, snapshot);
+        await this.syncRepositoryRepresentations(repoPath, snapshot, branchName);
       }
 
       await this.updateRepositoryMetadata(agent, {
@@ -1107,6 +1150,186 @@ export class AgentVcsService {
       });
 
       return { pulled: true, branch: branchName };
+    });
+  }
+
+  async replaceLocalWithRemote(agentId: string) {
+    return this.runQueued(agentId, async () => {
+      const agent = await this.getAgentOrThrow(agentId);
+      const branch = await this.resolveBranch(agentId, {
+        allowDefaultFallback: true,
+      });
+      if (!branch) {
+        throw new Error("No branch available to replace.");
+      }
+
+      const repoPath = this.getRepoPath(agentId);
+      const git = simpleGit(repoPath);
+      const remote = await this.getEffectiveRemote(agent);
+      if (!remote?.repositoryUrl) {
+        return { replaced: false, reason: "No remote configured." };
+      }
+
+      await mkdir(repoPath, { recursive: true });
+      await this.ensureRemote(git, remote);
+
+      const branchName = branch.version.gitBranch ?? branch.version.version;
+      await this.checkoutBranch(git, branchName);
+      await git.fetch("origin", branchName).catch(() => null);
+      await git.raw(["reset", "--hard", `origin/${branchName}`]);
+
+      const snapshot = await this.readSnapshotFromRepo(repoPath);
+      if (snapshot) {
+        await this.applySnapshot(agent, snapshot);
+        await this.syncRepositoryRepresentations(repoPath, snapshot, branchName);
+      }
+
+      await this.markBranchPendingCommitsReplaced(
+        branch.id,
+        remote.repositoryUrl ?? null,
+        branchName,
+      );
+
+      const now = new Date().toISOString();
+      await this.updateRepositoryMetadata(agent, {
+        lastFetchAt: now,
+        lastPullAt: now,
+        lastPushStatus: "idle",
+        lastPushMessage: "Local repository replaced with remote branch state.",
+      });
+
+      return {
+        replaced: true,
+        branch: branchName,
+        action: "replace-local-with-remote",
+        message: "Local branch was replaced with the remote branch state.",
+      };
+    });
+  }
+
+  async replaceRemoteWithLocal(agentId: string) {
+    return this.runQueued(agentId, async () => {
+      const agent = await this.getAgentOrThrow(agentId);
+      const branch = await this.resolveBranch(agentId, {
+        allowDefaultFallback: true,
+      });
+      if (!branch) {
+        throw new Error("No branch available to replace.");
+      }
+
+      const repository = await this.getEffectiveRemote(agent);
+      if (!repository?.repositoryUrl) {
+        return { replaced: false, reason: "No remote configured." };
+      }
+
+      let entries = await this.agentVersionEntryRepository.findByInstanceIdAsc(
+        branch.id,
+      );
+      if (entries.length === 0) {
+        const bootstrap = await this.ensureBranchBootstrapCommit(
+          agent,
+          branch,
+          "Sync current branch",
+        );
+        entries = [bootstrap];
+      }
+
+      const pending = entries.filter((entry) => {
+        const pushed = Boolean(entry.metadata?.git?.pushed);
+        const status = String(entry.metadata?.git?.status ?? "pending");
+        return !pushed || (status !== "success" && status !== "replaced");
+      });
+
+      const repoPath = this.getRepoPath(agentId);
+      await mkdir(repoPath, { recursive: true });
+      const git = simpleGit(repoPath);
+      const isRepo = await git.checkIsRepo().catch(() => false);
+      if (!isRepo) {
+        await git.init().catch(() => null);
+      }
+      await this.ensureRemote(git, repository);
+
+      const branchName = branch.version.gitBranch ?? branch.version.version;
+      await this.checkoutBranch(git, branchName);
+      await git.fetch("origin", branchName).catch(() => null);
+
+      for (const entry of pending) {
+        const files =
+          entry.metadata?.files ??
+          this.generateRepositoryFiles(
+            (entry.metadata?.snapshot as SnapshotShape | null) ??
+              (await this.buildLiveSnapshot(agentId)),
+            branchName,
+          );
+        await this.writeManagedFiles(repoPath, files);
+        await git.add(".");
+        await git
+          .commit(entry.message?.trim() || "Update agent", undefined, {
+            "--allow-empty": null,
+          })
+          .catch(() => null);
+      }
+
+      if (repository.autoCreateRepository) {
+        await this.ensureRemoteRepository(repository);
+      }
+
+      let pushed = false;
+      let pushMessage =
+        pending.length > 0
+          ? `Force-published ${pending.length} commit${pending.length === 1 ? "" : "s"}.`
+          : "Remote branch replaced with local branch state.";
+
+      try {
+        await git.push("origin", branchName, {
+          "-u": null,
+          "--force-with-lease": null,
+        });
+        pushed = true;
+      } catch (error: any) {
+        pushed = false;
+        pushMessage =
+          error?.message?.trim?.() ||
+          `Failed to replace remote branch ${branchName} with local state.`;
+      }
+
+      const now = new Date().toISOString();
+      for (const entry of pending) {
+        await this.agentVersionEntryRepository.updateMetadata(entry.id, {
+          ...(entry.metadata ?? {}),
+          git: {
+            ...(entry.metadata?.git ?? {}),
+            status: pushed ? "success" : "failed",
+            pushed,
+            syncedAt: pushed ? now : null,
+            message: pushed
+              ? entry.message?.trim?.() || "Update agent"
+              : pushMessage,
+            remoteUrl: repository.repositoryUrl ?? null,
+            branch: branchName,
+          },
+        });
+      }
+
+      await this.updateRepositoryMetadata(agent, {
+        mode: "git",
+        localRepoPath: repoPath,
+        currentBranchId: branch.id,
+        currentBranchName: branchName,
+        initializedAt: agent.metadata?.repository?.initializedAt ?? null,
+        lastPushAt: pushed
+          ? now
+          : (agent.metadata?.repository?.lastPushAt ?? null),
+        lastPushStatus: pushed ? "success" : "failed",
+        lastPushMessage: pushMessage,
+      });
+
+      return {
+        replaced: pushed,
+        branch: branchName,
+        action: "replace-remote-with-local",
+        message: pushMessage,
+      };
     });
   }
 
@@ -2159,13 +2382,15 @@ export class AgentVcsService {
     git: ReturnType<typeof simpleGit>,
     commitHash: string,
   ): Promise<SnapshotFile[]> {
-    const paths = [
-      "agent.json",
-      "agent.xml",
-      "namespace.agent",
-      "example.agent.json",
-      ".gitignore",
-    ];
+    const paths = await git
+      .raw(["ls-tree", "-r", "--name-only", commitHash])
+      .then((output) =>
+        output
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean),
+      )
+      .catch(() => []);
     const files: SnapshotFile[] = [];
     for (const path of paths) {
       const content = await git
@@ -2230,6 +2455,10 @@ export class AgentVcsService {
       await this.agentParameterVersionRepository.findLiveByAgentId(agentId);
     const tools =
       await this.agentToolVersionRepository.findLiveByAgentId(agentId);
+    const assets = await this.assetRepository.findByAgentId(agentId);
+    const sources = await this.externalResourceRepository.findByAgentId(agentId);
+    const datasources = await this.dataSourceRepository.findByAgentId(agentId);
+    const mcps = this.serializeMcpConfigs(agent.metadata);
 
     return {
       schemaVersion: 1,
@@ -2256,6 +2485,12 @@ export class AgentVcsService {
         : null,
       parameter: this.serializeParameter(parameter),
       tools: tools.map((tool) => this.serializeTool(tool)),
+      assets: assets.map((asset) => this.serializeAsset(asset)),
+      sources: sources.map((source) => this.serializeSource(source)),
+      datasources: datasources.map((datasource) =>
+        this.serializeDataSource(datasource),
+      ),
+      mcps,
     };
   }
 
@@ -2265,6 +2500,13 @@ export class AgentVcsService {
       description: snapshot.agent.description ?? null,
       domainLabel: snapshot.agent.domainLabel ?? null,
       version: snapshot.agent.version || agent.version,
+      metadata: {
+        ...(agent.metadata ?? {}),
+        custom: {
+          ...(agent.metadata?.custom ?? {}),
+          mcpServers: snapshot.mcps ?? [],
+        },
+      },
     });
 
     const existingConfig = await this.agentConfigRepository.findByAgentId(
@@ -2322,6 +2564,45 @@ export class AgentVcsService {
           stateManagement: tool.stateManagement ?? null,
           safetyPolicy: tool.safetyPolicy ?? null,
           trigger: tool.trigger ?? null,
+        })),
+      );
+    }
+
+    await this.assetRepository.deleteByAgentId(agent.id);
+    if (snapshot.assets.length > 0) {
+      await this.assetRepository.saveMany(
+        snapshot.assets.map((asset) => ({
+          agentId: agent.id,
+          name: asset.name,
+          type: asset.type as Asset["type"],
+          size: asset.size,
+          url: asset.url,
+          tags: asset.tags ?? [],
+        })),
+      );
+    }
+
+    await this.externalResourceRepository.deleteByAgentId(agent.id);
+    if (snapshot.sources.length > 0) {
+      await this.externalResourceRepository.saveMany(
+        snapshot.sources.map((source) => ({
+          agentId: agent.id,
+          name: source.name,
+          url: source.url,
+          description: source.description,
+          category: source.category as ExternalResource["category"],
+        })),
+      );
+    }
+
+    await this.dataSourceRepository.deleteByAgentId(agent.id);
+    if (snapshot.datasources.length > 0) {
+      await this.dataSourceRepository.saveMany(
+        snapshot.datasources.map((datasource) => ({
+          agentId: agent.id,
+          name: datasource.name,
+          type: datasource.type as DataSourceConnection["type"],
+          config: datasource.config ?? null,
         })),
       );
     }
@@ -2384,15 +2665,71 @@ export class AgentVcsService {
     };
   }
 
+  private serializeAsset(asset: Asset) {
+    return {
+      name: asset.name,
+      type: asset.type,
+      size: Number(asset.size ?? 0),
+      url: asset.url,
+      tags: asset.tags ?? [],
+    };
+  }
+
+  private serializeSource(source: ExternalResource) {
+    return {
+      name: source.name,
+      url: source.url,
+      description: source.description,
+      category: source.category,
+    };
+  }
+
+  private serializeDataSource(dataSource: DataSourceConnection) {
+    return {
+      name: dataSource.name,
+      type: dataSource.type,
+      config: dataSource.config ?? null,
+    };
+  }
+
+  private serializeMcpConfigs(metadata: AgentMetadata | null | undefined) {
+    const value = metadata?.custom?.mcpServers;
+    type McpSnapshot = SnapshotShape["mcps"][number];
+
+    return Array.isArray(value)
+      ? value
+          .map<McpSnapshot | null>((entry) =>
+            entry && typeof entry === "object"
+              ? {
+                  slug:
+                    typeof (entry as any).slug === "string"
+                      ? (entry as any).slug
+                      : "",
+                  config:
+                    (entry as any).config &&
+                    typeof (entry as any).config === "object"
+                      ? (entry as any).config
+                      : null,
+                }
+              : null,
+          )
+          .filter((entry): entry is McpSnapshot => !!entry?.slug)
+      : [];
+  }
+
   private generateRepositoryFiles(
     snapshot: SnapshotShape,
     branchName: string,
+    options?: {
+      codeExtensions?: Map<string, "ts" | "js">;
+    },
   ): SnapshotFile[] {
-    const agentJson = JSON.stringify(snapshot, null, 2) + "\n";
+    const repoSnapshot = this.serializeRepoSnapshot(snapshot);
+    const agentJson = JSON.stringify(repoSnapshot, null, 2) + "\n";
     const exampleAgentJson =
       JSON.stringify(
         {
-          ...snapshot,
+          ...repoSnapshot,
           notes:
             "This is a generated local development example file. Edit agent.json for live branch state.",
         },
@@ -2438,6 +2775,26 @@ export class AgentVcsService {
         path: ".tuul-manifest.json",
         content: "",
       },
+      {
+        path: "tools/.gitkeep",
+        content: "",
+      },
+      {
+        path: "sources/.gitkeep",
+        content: "",
+      },
+      {
+        path: "assets/.gitkeep",
+        content: "",
+      },
+      {
+        path: "datasources/.gitkeep",
+        content: "",
+      },
+      {
+        path: "mcps/.gitkeep",
+        content: "",
+      },
     ];
 
     for (const tool of snapshot.tools) {
@@ -2457,11 +2814,64 @@ export class AgentVcsService {
           ) + "\n",
       });
       if (tool.code) {
+        const extension = options?.codeExtensions?.get(safeName) ?? "ts";
         managedFiles.push({
-          path: `tools/${safeName}.ts`,
+          path: `tools/${safeName}.${extension}`,
           content: `${tool.code.trim()}\n`,
         });
       }
+    }
+
+    if (snapshot.tools.length > 0) {
+      this.removeGitkeep(managedFiles, "tools/.gitkeep");
+    }
+
+    for (const source of snapshot.sources) {
+      const safeName = this.slugify(source.name);
+      managedFiles.push({
+        path: `sources/${safeName}.json`,
+        content: JSON.stringify(source, null, 2) + "\n",
+      });
+    }
+
+    if (snapshot.sources.length > 0) {
+      this.removeGitkeep(managedFiles, "sources/.gitkeep");
+    }
+
+    for (const asset of snapshot.assets) {
+      const safeName = this.slugify(asset.name);
+      managedFiles.push({
+        path: `assets/${safeName}.json`,
+        content: JSON.stringify(asset, null, 2) + "\n",
+      });
+    }
+
+    if (snapshot.assets.length > 0) {
+      this.removeGitkeep(managedFiles, "assets/.gitkeep");
+    }
+
+    for (const datasource of snapshot.datasources) {
+      const safeName = this.slugify(datasource.name);
+      managedFiles.push({
+        path: `datasources/${safeName}.json`,
+        content: JSON.stringify(datasource, null, 2) + "\n",
+      });
+    }
+
+    if (snapshot.datasources.length > 0) {
+      this.removeGitkeep(managedFiles, "datasources/.gitkeep");
+    }
+
+    for (const mcp of snapshot.mcps) {
+      const safeName = this.slugify(mcp.slug);
+      managedFiles.push({
+        path: `mcps/${safeName}.json`,
+        content: JSON.stringify(mcp, null, 2) + "\n",
+      });
+    }
+
+    if (snapshot.mcps.length > 0) {
+      this.removeGitkeep(managedFiles, "mcps/.gitkeep");
     }
 
     const manifest = {
@@ -2477,6 +2887,25 @@ export class AgentVcsService {
     };
 
     return managedFiles;
+  }
+
+  private serializeRepoSnapshot(snapshot: SnapshotShape) {
+    const {
+      tools: _tools,
+      assets: _assets,
+      sources: _sources,
+      datasources: _datasources,
+      mcps: _mcps,
+      ...rest
+    } = snapshot;
+    return rest;
+  }
+
+  private removeGitkeep(files: SnapshotFile[], path: string) {
+    const index = files.findIndex((file) => file.path === path);
+    if (index >= 0) {
+      files.splice(index, 1);
+    }
   }
 
   private buildAgentXml(snapshot: SnapshotShape, branchName: string) {
@@ -2697,17 +3126,295 @@ export class AgentVcsService {
   ): Promise<SnapshotShape | null> {
     try {
       const raw = await readFile(join(repoPath, "agent.json"), "utf8");
-      return JSON.parse(raw) as SnapshotShape;
+      const snapshot = JSON.parse(raw) as Partial<SnapshotShape>;
+      const repoTools = await this.readToolsFromRepo(repoPath);
+      const repoSources = await this.readJsonCollectionFromRepo(repoPath, "sources");
+      const repoAssets = await this.readJsonCollectionFromRepo(repoPath, "assets");
+      const repoDatasources = await this.readJsonCollectionFromRepo(
+        repoPath,
+        "datasources",
+      );
+      const repoMcps = await this.readJsonCollectionFromRepo(repoPath, "mcps");
+      const changedPaths = await this.readHeadChangedPaths(repoPath);
+
+      return this.normalizeSnapshotShape({
+        schemaVersion: 1,
+        agent: snapshot.agent as SnapshotShape["agent"],
+        config: (snapshot.config ?? null) as SnapshotShape["config"],
+        parameter: (snapshot.parameter ?? null) as SnapshotShape["parameter"],
+        tools:
+          repoTools.length > 0
+            ? repoTools
+            : this.mergeSnapshotTools(
+                snapshot.tools ?? [],
+                repoTools,
+                changedPaths,
+              ),
+        sources: repoSources as SnapshotShape["sources"],
+        assets: repoAssets as SnapshotShape["assets"],
+        datasources: repoDatasources as SnapshotShape["datasources"],
+        mcps: repoMcps as SnapshotShape["mcps"],
+      });
     } catch {
       return null;
     }
+  }
+
+  private async readHeadChangedPaths(repoPath: string): Promise<Set<string>> {
+    const git = simpleGit(repoPath);
+    const output = await git
+      .raw(["show", "--pretty=", "--name-only", "HEAD"])
+      .catch(() => "");
+
+    return new Set(
+      output
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean),
+    );
+  }
+
+  private async readToolsFromRepo(repoPath: string): Promise<SnapshotShape["tools"]> {
+    const toolsDir = join(repoPath, "tools");
+    const entries = await readdir(toolsDir, { withFileTypes: true }).catch(() => []);
+    if (!entries.length) {
+      return [];
+    }
+
+    const jsonEntries = entries.filter(
+      (entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".json"),
+    );
+
+    const tools: SnapshotShape["tools"] = [];
+
+    for (const entry of jsonEntries) {
+      const manifestPath = join(toolsDir, entry.name);
+      const slug = entry.name.replace(/\.json$/i, "");
+
+      try {
+        const manifestRaw = await readFile(manifestPath, "utf8");
+        const manifest = JSON.parse(manifestRaw) as Record<string, unknown>;
+        const tsPath = join(toolsDir, `${slug}.ts`);
+        const jsPath = join(toolsDir, `${slug}.js`);
+
+        let code: string | null = null;
+        const tsCode = await readFile(tsPath, "utf8").catch(() => null);
+        const jsCode = await readFile(jsPath, "utf8").catch(() => null);
+        code = tsCode ?? jsCode ?? null;
+
+        tools.push({
+          name:
+            (typeof manifest.name === "string" && manifest.name.trim()) || slug,
+          description:
+            typeof manifest.description === "string"
+              ? manifest.description
+              : null,
+          schema:
+            manifest.schema && typeof manifest.schema === "object"
+              ? manifest.schema
+              : null,
+          code,
+          enabled:
+            typeof manifest.enabled === "boolean" ? manifest.enabled : true,
+          executionPolicy:
+            manifest.executionPolicy && typeof manifest.executionPolicy === "object"
+              ? manifest.executionPolicy
+              : null,
+          stateManagement:
+            manifest.stateManagement && typeof manifest.stateManagement === "object"
+              ? manifest.stateManagement
+              : null,
+          safetyPolicy:
+            manifest.safetyPolicy && typeof manifest.safetyPolicy === "object"
+              ? manifest.safetyPolicy
+              : null,
+          trigger:
+            manifest.trigger && typeof manifest.trigger === "object"
+              ? manifest.trigger
+              : null,
+        });
+      } catch {
+        continue;
+      }
+    }
+
+    return tools;
+  }
+
+  private async readJsonCollectionFromRepo(
+    repoPath: string,
+    directory: string,
+  ): Promise<Record<string, unknown>[]> {
+    const targetDir = join(repoPath, directory);
+    const entries = await readdir(targetDir, { withFileTypes: true }).catch(() => []);
+    if (!entries.length) {
+      return [];
+    }
+
+    const jsonEntries = entries.filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.toLowerCase().endsWith(".json") &&
+        entry.name !== ".gitkeep",
+    );
+
+    const values: Record<string, unknown>[] = [];
+    for (const entry of jsonEntries) {
+      try {
+        const raw = await readFile(join(targetDir, entry.name), "utf8");
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") {
+          values.push(parsed as Record<string, unknown>);
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return values;
+  }
+
+  private async readToolCodeExtensions(
+    repoPath: string,
+  ): Promise<Map<string, "ts" | "js">> {
+    const toolsDir = join(repoPath, "tools");
+    const entries = await readdir(toolsDir, { withFileTypes: true }).catch(() => []);
+    const extensions = new Map<string, "ts" | "js">();
+
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const match = entry.name.match(/^(.*)\.(ts|js)$/i);
+      if (!match) continue;
+      const [, slug, extension] = match;
+      if (!extensions.has(slug)) {
+        extensions.set(slug, extension.toLowerCase() as "ts" | "js");
+      }
+    }
+
+    return extensions;
+  }
+
+  private async syncRepositoryRepresentations(
+    repoPath: string,
+    snapshot: SnapshotShape,
+    branchName: string,
+  ) {
+    if (!existsSync(repoPath)) {
+      return;
+    }
+
+    const codeExtensions = await this.readToolCodeExtensions(repoPath);
+    const files = this.generateRepositoryFiles(snapshot, branchName, {
+      codeExtensions,
+    });
+    await this.writeManagedFiles(repoPath, files);
+  }
+
+  private mergeSnapshotTools(
+    agentJsonTools: SnapshotShape["tools"],
+    repoTools: SnapshotShape["tools"],
+    changedPaths: Set<string>,
+  ): SnapshotShape["tools"] {
+    const byKey = new Map<
+      string,
+      {
+        agent?: SnapshotShape["tools"][number];
+        repo?: SnapshotShape["tools"][number];
+      }
+    >();
+
+    for (const tool of agentJsonTools ?? []) {
+      const key = this.slugify(tool.name);
+      const existing = byKey.get(key) ?? {};
+      existing.agent = tool;
+      byKey.set(key, existing);
+    }
+
+    for (const tool of repoTools ?? []) {
+      const key = this.slugify(tool.name);
+      const existing = byKey.get(key) ?? {};
+      existing.repo = tool;
+      byKey.set(key, existing);
+    }
+
+    const merged: SnapshotShape["tools"] = [];
+
+    for (const [key, sources] of byKey.entries()) {
+      const agentTool = sources.agent;
+      const repoTool = sources.repo;
+      if (!agentTool && !repoTool) continue;
+
+      const manifestChanged = changedPaths.has(`tools/${key}.json`);
+      const codeChanged =
+        changedPaths.has(`tools/${key}.ts`) || changedPaths.has(`tools/${key}.js`);
+      const agentJsonChanged = changedPaths.has("agent.json");
+      const preferRepoCode = codeChanged && !agentJsonChanged;
+      const preferAgentCode = agentJsonChanged && !codeChanged;
+
+      const preferRepoMetadata =
+        (manifestChanged || codeChanged) && !agentJsonChanged;
+      const preferAgentMetadata =
+        agentJsonChanged && !(manifestChanged || codeChanged);
+
+      const base = preferRepoMetadata
+        ? repoTool ?? agentTool!
+        : agentTool ?? repoTool!;
+      const secondary = base === agentTool ? repoTool : agentTool;
+
+      merged.push({
+        name: base?.name ?? secondary?.name ?? key,
+        description: preferRepoMetadata
+          ? repoTool?.description ?? agentTool?.description ?? null
+          : preferAgentMetadata
+            ? agentTool?.description ?? repoTool?.description ?? null
+            : agentTool?.description ?? repoTool?.description ?? null,
+        schema: preferRepoMetadata
+          ? repoTool?.schema ?? agentTool?.schema ?? null
+          : preferAgentMetadata
+            ? agentTool?.schema ?? repoTool?.schema ?? null
+            : agentTool?.schema ?? repoTool?.schema ?? null,
+        code: preferRepoCode
+          ? repoTool?.code ?? agentTool?.code ?? null
+          : preferAgentCode
+            ? agentTool?.code ?? repoTool?.code ?? null
+            : repoTool?.code ?? agentTool?.code ?? null,
+        enabled:
+          (preferRepoMetadata
+            ? repoTool?.enabled
+            : preferAgentMetadata
+              ? agentTool?.enabled
+              : agentTool?.enabled ?? repoTool?.enabled) ?? true,
+        executionPolicy: preferRepoMetadata
+          ? repoTool?.executionPolicy ?? agentTool?.executionPolicy ?? null
+          : preferAgentMetadata
+            ? agentTool?.executionPolicy ?? repoTool?.executionPolicy ?? null
+            : agentTool?.executionPolicy ?? repoTool?.executionPolicy ?? null,
+        stateManagement: preferRepoMetadata
+          ? repoTool?.stateManagement ?? agentTool?.stateManagement ?? null
+          : preferAgentMetadata
+            ? agentTool?.stateManagement ?? repoTool?.stateManagement ?? null
+            : agentTool?.stateManagement ?? repoTool?.stateManagement ?? null,
+        safetyPolicy: preferRepoMetadata
+          ? repoTool?.safetyPolicy ?? agentTool?.safetyPolicy ?? null
+          : preferAgentMetadata
+            ? agentTool?.safetyPolicy ?? repoTool?.safetyPolicy ?? null
+            : agentTool?.safetyPolicy ?? repoTool?.safetyPolicy ?? null,
+        trigger: preferRepoMetadata
+          ? repoTool?.trigger ?? agentTool?.trigger ?? null
+          : preferAgentMetadata
+            ? agentTool?.trigger ?? repoTool?.trigger ?? null
+            : agentTool?.trigger ?? repoTool?.trigger ?? null,
+      });
+    }
+
+    return merged;
   }
 
   private async getBranchHeadSnapshot(agentId: string, branchId: string) {
     const head =
       await this.agentVersionEntryRepository.findLatestForInstance(branchId);
     if (head?.metadata?.snapshot) {
-      return head.metadata.snapshot as SnapshotShape;
+      return this.normalizeSnapshotShape(head.metadata.snapshot);
     }
     const branch = await this.agentInstanceRepository.findById(branchId);
     if (branch?.commitHash) {
@@ -2716,10 +3423,26 @@ export class AgentVcsService {
         branch.commitHash,
       );
       if (commit?.metadata?.snapshot) {
-        return commit.metadata.snapshot as SnapshotShape;
+        return this.normalizeSnapshotShape(commit.metadata.snapshot);
       }
     }
     return null;
+  }
+
+  private normalizeSnapshotShape(
+    snapshot: Partial<SnapshotShape> | null | undefined,
+  ): SnapshotShape {
+    return {
+      schemaVersion: 1,
+      agent: snapshot?.agent as SnapshotShape["agent"],
+      config: (snapshot?.config ?? null) as SnapshotShape["config"],
+      parameter: (snapshot?.parameter ?? null) as SnapshotShape["parameter"],
+      tools: snapshot?.tools ?? [],
+      assets: snapshot?.assets ?? [],
+      sources: snapshot?.sources ?? [],
+      datasources: snapshot?.datasources ?? [],
+      mcps: snapshot?.mcps ?? [],
+    };
   }
 
   private buildFileDiff(
@@ -3082,6 +3805,35 @@ export class AgentVcsService {
       return { localAheadBy: left ?? 0, remoteAheadBy: right ?? 0 };
     } catch {
       return { localAheadBy: 0, remoteAheadBy: 0 };
+    }
+  }
+
+  private async markBranchPendingCommitsReplaced(
+    branchId: string,
+    remoteUrl: string | null,
+    branchName: string,
+  ) {
+    const entries =
+      await this.agentVersionEntryRepository.findByInstanceIdAsc(branchId);
+    const pending = entries.filter((entry) => {
+      const pushed = Boolean(entry.metadata?.git?.pushed);
+      const status = String(entry.metadata?.git?.status ?? "pending");
+      return !pushed || (status !== "success" && status !== "replaced");
+    });
+
+    for (const entry of pending) {
+      await this.agentVersionEntryRepository.updateMetadata(entry.id, {
+        ...(entry.metadata ?? {}),
+        git: {
+          ...(entry.metadata?.git ?? {}),
+          status: "replaced" as any,
+          pushed: false,
+          syncedAt: null,
+          message: "Replaced by remote branch state.",
+          remoteUrl,
+          branch: branchName,
+        },
+      });
     }
   }
 }

@@ -1,19 +1,19 @@
 import { Autowired, Service } from "fragment-ts";
+import type { AgentMetadata } from "../../../entities/agent.entity";
 import { InstanceProjection } from "../../../entities/enums/instance-projection.enum";
 import { InstanceStatus } from "../../../entities/enums/instance-status.enum";
-import type { AgentMetadata } from "../../../entities/agent.entity";
 import { AgentRepository } from "../../agent/repositories/agent.repository";
 import { ConnectGitRepositoryDto } from "../dto/connect-git-repository.dto";
 import { CreateAgentInstanceDto } from "../dto/create-agent-instance.dto";
 import { CreateVersionEntryDto } from "../dto/create-version-entry.dto";
 import { AgentInstanceRepository } from "../repositories/agent-instance.repository";
-import { AgentVersionEntryRepository } from "../repositories/agent-version-entry.repository";
-import { GitConnectionService } from "./git-connection.service";
-import { GithubAppService } from "./github-app.service";
-import { GitSyncService } from "./git-sync.service";
 import { AgentParameterVersionRepository } from "../repositories/agent-parameter-version.repository";
 import { AgentToolVersionRepository } from "../repositories/agent-tool-version.repository";
+import { AgentVersionEntryRepository } from "../repositories/agent-version-entry.repository";
 import { AgentVcsService } from "./agent-vcs.service";
+import { GitConnectionService } from "./git-connection.service";
+import { GitSyncService } from "./git-sync.service";
+import { GithubAppService } from "./github-app.service";
 
 @Service()
 export class VersionControlCommandService {

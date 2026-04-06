@@ -23,6 +23,10 @@ export class AssetRepository {
     return this.assetRepository.save(input);
   }
 
+  async saveMany(inputs: Partial<Asset>[]): Promise<Asset[]> {
+    return this.assetRepository.save(inputs);
+  }
+
   async findById(id: string): Promise<Asset | null> {
     return this.assetRepository.findOne({
       where: { id },
@@ -31,5 +35,9 @@ export class AssetRepository {
 
   async deleteById(id: string): Promise<void> {
     await this.assetRepository.delete(id);
+  }
+
+  async deleteByAgentId(agentId: string): Promise<void> {
+    await this.assetRepository.delete({ agentId });
   }
 }

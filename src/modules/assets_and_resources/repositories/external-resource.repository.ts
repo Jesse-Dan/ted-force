@@ -23,6 +23,12 @@ export class ExternalResourceRepository {
     return this.resourceRepository.save(input);
   }
 
+  async saveMany(
+    inputs: Partial<ExternalResource>[],
+  ): Promise<ExternalResource[]> {
+    return this.resourceRepository.save(inputs);
+  }
+
   async findById(id: string): Promise<ExternalResource | null> {
     return this.resourceRepository.findOne({
       where: { id },
@@ -31,5 +37,9 @@ export class ExternalResourceRepository {
 
   async deleteById(id: string): Promise<void> {
     await this.resourceRepository.delete(id);
+  }
+
+  async deleteByAgentId(agentId: string): Promise<void> {
+    await this.resourceRepository.delete({ agentId });
   }
 }

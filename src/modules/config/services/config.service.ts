@@ -32,10 +32,12 @@ export class ConfigService {
     const existing = await this.agentConfigRepository.findByAgentId(agentId);
 
     if (!existing) {
+      const defaults = await this.createDefaultConfig(agentId);
       const created = await this.agentConfigRepository.save({
-        ...(await this.createDefaultConfig(agentId)),
+        ...defaults,
         agentId,
         ...payload,
+        runtimeLimits: this.mergeRuntimeLimits(defaults.runtimeLimits, payload.runtimeLimits),
       });
 
       return this.applyConfigDefaults(created);
@@ -44,6 +46,7 @@ export class ConfigService {
     const updated = await this.agentConfigRepository.save({
       ...existing,
       ...payload,
+      runtimeLimits: this.mergeRuntimeLimits(existing.runtimeLimits, payload.runtimeLimits),
     });
 
     return this.applyConfigDefaults(updated);
@@ -93,8 +96,19 @@ export class ConfigService {
   private applyConfigDefaults(config: AgentConfig): AgentConfig {
     return {
       ...config,
-      runtimeLimits: config.runtimeLimits ?? DEFAULT_RUNTIME_LIMITS,
+      runtimeLimits: this.mergeRuntimeLimits(DEFAULT_RUNTIME_LIMITS, config.runtimeLimits),
       accessPolicy: config.accessPolicy ?? DEFAULT_ACCESS_POLICY,
+    };
+  }
+
+  private mergeRuntimeLimits(
+    base?: AgentConfig["runtimeLimits"] | null,
+    incoming?: Partial<NonNullable<AgentConfig["runtimeLimits"]>> | null,
+  ): NonNullable<AgentConfig["runtimeLimits"]> {
+    return {
+      ...DEFAULT_RUNTIME_LIMITS,
+      ...(base ?? {}),
+      ...(incoming ?? {}),
     };
   }
 }

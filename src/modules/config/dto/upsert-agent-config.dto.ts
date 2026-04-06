@@ -47,4 +47,18 @@ export class UpsertAgentConfigDto {
   @Validators.IsOptional()
   @Validators.IsBoolean()
   isSystemHealthy?: boolean;
+
+  @Validate({ name: "runtimeLimits" })
+  @Validators.IsOptional()
+  @Validators.IsObject()
+  runtimeLimits?: {
+    requestsPerMinute?: number;
+    tokenLimit?: number;
+    tokensUsed?: number;
+    allowPaidActions?: boolean;
+    useCreditAccount?: boolean;
+    requireCreditAccount?: boolean;
+    maxSpendPerRunUsd?: number;
+    maxSpendPerMonthUsd?: number;
+  } | null;
 }

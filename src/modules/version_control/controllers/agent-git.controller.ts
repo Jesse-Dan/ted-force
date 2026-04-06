@@ -42,6 +42,16 @@ export class AgentGitController {
     return this.agentVcsService.pull(agentId);
   }
 
+  @Post("/agents/:agentId/git/pull/replace-local")
+  async replaceLocalWithRemote(@Param("agentId") agentId: string) {
+    return this.agentVcsService.replaceLocalWithRemote(agentId);
+  }
+
+  @Post("/agents/:agentId/git/push/replace-remote")
+  async replaceRemoteWithLocal(@Param("agentId") agentId: string) {
+    return this.agentVcsService.replaceRemoteWithLocal(agentId);
+  }
+
   @Post("/agents/:agentId/git/fetch")
   async fetch(@Param("agentId") agentId: string) {
     return this.agentVcsService.fetch(agentId);

@@ -1,6 +1,7 @@
 import {
   FragmentRepository,
   InjectRepository,
+  IsNull,
   Repository,
 } from "fragment-ts";
 import { AgentTool } from "../../../entities/agent-tool.entity";
@@ -14,6 +15,7 @@ export class AgentToolRepository {
     return this.agentToolRepository.find({
       where: {
         agentId,
+        commitHash: IsNull(),
       },
       order: {
         createdAt: "ASC",
@@ -26,6 +28,7 @@ export class AgentToolRepository {
       where: {
         agentId,
         enabled: true,
+        commitHash: IsNull(),
       },
       order: {
         createdAt: "ASC",

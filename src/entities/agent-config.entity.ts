@@ -8,6 +8,11 @@ export interface RuntimeLimits {
   requestsPerMinute: number;
   tokenLimit: number;
   tokensUsed: number;
+  allowPaidActions?: boolean;
+  useCreditAccount?: boolean;
+  requireCreditAccount?: boolean;
+  maxSpendPerRunUsd?: number;
+  maxSpendPerMonthUsd?: number;
 }
 
 export interface AccessPolicy {
@@ -21,6 +26,11 @@ export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
   requestsPerMinute: 40,
   tokenLimit: 0,
   tokensUsed: 0,
+  allowPaidActions: false,
+  useCreditAccount: true,
+  requireCreditAccount: true,
+  maxSpendPerRunUsd: 25,
+  maxSpendPerMonthUsd: 250,
 };
 
 export const DEFAULT_ACCESS_POLICY: AccessPolicy = {
