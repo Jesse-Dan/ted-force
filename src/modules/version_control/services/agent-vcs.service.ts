@@ -1333,6 +1333,232 @@ export class AgentVcsService {
     });
   }
 
+  async getConflictReview(agentId: string) {
+    return this.runQueued(agentId, async () => {
+      const agent = await this.getAgentOrThrow(agentId);
+      const branch = await this.resolveBranch(agentId, {
+        allowDefaultFallback: true,
+      });
+      if (!branch) {
+        throw new Error("No branch available for conflict review.");
+      }
+
+      const repoPath = this.getRepoPath(agentId);
+      const git = simpleGit(repoPath);
+      const remote = await this.getEffectiveRemote(agent);
+      if (!remote?.repositoryUrl) {
+        throw new Error("No remote configured.");
+      }
+
+      await mkdir(repoPath, { recursive: true });
+      await this.ensureRemote(git, remote);
+
+      const branchName = branch.version.gitBranch ?? branch.version.version;
+      await this.checkoutBranch(git, branchName);
+      await git.fetch("origin", branchName).catch(() => null);
+
+      const counts = await this.getAheadBehindCounts(git, branchName);
+      const codeExtensions = await this.readToolCodeExtensions(repoPath);
+      const localSnapshot = await this.buildLiveSnapshot(agentId);
+      const localFiles = this.generateRepositoryFiles(localSnapshot, branchName, {
+        codeExtensions,
+      }).filter((file) => this.isUserMergeableFile(file.path));
+      const remoteFiles = (
+        await this.readRepoFilesAtRef(git, `origin/${branchName}`)
+      ).filter((file) => this.isUserMergeableFile(file.path));
+
+      return {
+        branch: branchName,
+        localAheadBy: counts.localAheadBy,
+        remoteAheadBy: counts.remoteAheadBy,
+        diverged: counts.localAheadBy > 0 && counts.remoteAheadBy > 0,
+        review: this.buildFileDiff(remoteFiles, localFiles, {
+          type: "conflict",
+          from: `origin/${branchName}`,
+          to: branchName,
+        }),
+      };
+    });
+  }
+
+  async resolveConflictMerge(
+    agentId: string,
+    payload: {
+      message?: string;
+      resolutions?: Record<string, "local" | "remote">;
+    },
+  ) {
+    return this.runQueued(agentId, async () => {
+      const agent = await this.getAgentOrThrow(agentId);
+      const branch = await this.resolveBranch(agentId, {
+        allowDefaultFallback: true,
+      });
+      if (!branch) {
+        throw new Error("No branch available for conflict merge.");
+      }
+
+      const repoPath = this.getRepoPath(agentId);
+      const git = simpleGit(repoPath);
+      const remote = await this.getEffectiveRemote(agent);
+      if (!remote?.repositoryUrl) {
+        throw new Error("No remote configured.");
+      }
+
+      await mkdir(repoPath, { recursive: true });
+      await this.ensureRemote(git, remote);
+
+      const branchName = branch.version.gitBranch ?? branch.version.version;
+      await this.checkoutBranch(git, branchName);
+      await git.fetch("origin", branchName).catch(() => null);
+
+      const counts = await this.getAheadBehindCounts(git, branchName);
+      if (!(counts.localAheadBy > 0 && counts.remoteAheadBy > 0)) {
+        throw new Error("Branch is not in a diverged state.");
+      }
+
+      const status = await git.status().catch(() => null);
+      const hasWorkingChanges = Boolean(
+        status &&
+          (status.files?.length ||
+            status.created?.length ||
+            status.deleted?.length ||
+            status.modified?.length ||
+            status.renamed?.length ||
+            status.not_added?.length ||
+            status.conflicted?.length),
+      );
+      if (hasWorkingChanges) {
+        throw new Error(
+          "Repository has pending working-tree changes. Refresh branch state before resolving conflicts.",
+        );
+      }
+
+      const codeExtensions = await this.readToolCodeExtensions(repoPath);
+      const localSnapshot = await this.buildLiveSnapshot(agentId);
+      const localFiles = this.generateRepositoryFiles(localSnapshot, branchName, {
+        codeExtensions,
+      }).filter((file) => this.isUserMergeableFile(file.path));
+      const remoteFiles = (
+        await this.readRepoFilesAtRef(git, `origin/${branchName}`)
+      ).filter((file) => this.isUserMergeableFile(file.path));
+
+      let mergeStarted = false;
+      try {
+        await git.raw(["merge", "--no-commit", "--no-ff", `origin/${branchName}`]);
+        mergeStarted = true;
+      } catch (error: any) {
+        const message = String(error?.message ?? "");
+        const looksRecoverable =
+          /CONFLICT|Automatic merge failed|content conflict|add\/add|modify\/delete|rename\/delete/i.test(
+            message,
+          );
+        if (!looksRecoverable) {
+          await git.raw(["merge", "--abort"]).catch(() => null);
+          throw error;
+        }
+        mergeStarted = true;
+      }
+
+      try {
+        const mergedFiles = this.buildResolvedMergeFiles(
+          localFiles,
+          remoteFiles,
+          payload.resolutions ?? {},
+        );
+        const tempDir = join(
+          "/tmp",
+          `tuul-conflict-merge-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        );
+        await mkdir(tempDir, { recursive: true });
+        await this.writeManagedFiles(tempDir, mergedFiles);
+
+        const mergedSnapshot = await this.readSnapshotFromRepo(tempDir);
+        await rm(tempDir, { recursive: true, force: true }).catch(() => null);
+        if (!mergedSnapshot) {
+          throw new Error("Unable to build merged agent snapshot.");
+        }
+
+        await this.writeManagedFiles(repoPath, mergedFiles);
+        await git.add(".");
+        await git.commit(
+          payload.message?.trim() || "Resolve conflict and merge",
+          undefined,
+          { "--no-edit": null },
+        );
+
+        const nativeCommitHash = await git
+          .revparse(["HEAD"])
+          .then((value) => value.trim())
+          .catch(() => null);
+
+        await this.applySnapshot(agent, mergedSnapshot);
+        await this.syncRepositoryRepresentations(repoPath, mergedSnapshot, branchName);
+
+        const defaultBranch = this.getDefaultBranchName(agent);
+        const previous =
+          await this.agentVersionEntryRepository.findLatestForInstance(branch.id);
+        const files = this.generateRepositoryFiles(mergedSnapshot, branchName, {
+          codeExtensions,
+        });
+        const commitHash = this.generateCommitHash();
+        const entry = await this.agentVersionEntryRepository.save({
+          instanceId: branch.id,
+          version: branch.version.version,
+          releasedAt: new Date(),
+          message: payload.message?.trim() || "Resolve conflict and merge",
+          commitHash,
+          metadata: {
+            branch: {
+              id: branch.id,
+              name: branchName,
+              isDefault: branchName === defaultBranch,
+            },
+            parentCommitHash: previous?.commitHash ?? null,
+            snapshot: mergedSnapshot,
+            files,
+            git: {
+              status: "success",
+              pushed: false,
+              syncedAt: new Date().toISOString(),
+              message: payload.message?.trim() || "Resolve conflict and merge",
+              remoteUrl: remote.repositoryUrl ?? null,
+              branch: branchName,
+              nativeCommitHash,
+            },
+          },
+        });
+
+        await this.agentInstanceRepository.save({
+          ...branch,
+          commitHash,
+          projection: InstanceProjection.CURRENT,
+        });
+
+        await this.updateRepositoryMetadata(agent, {
+          mode: "git",
+          localRepoPath: repoPath,
+          currentBranchId: branch.id,
+          currentBranchName: branchName,
+          lastPushStatus: "idle",
+          lastPushMessage: "Conflict resolved locally. Push when ready.",
+        });
+
+        return {
+          merged: true,
+          branch: branchName,
+          commit: this.serializeCommit(entry, branchName, branchName === defaultBranch),
+          nativeCommitHash,
+          message: "Conflict resolved and merged locally. Push when ready.",
+        };
+      } catch (error) {
+        if (mergeStarted) {
+          await git.raw(["merge", "--abort"]).catch(() => null);
+        }
+        throw error;
+      }
+    });
+  }
+
   async fetch(agentId: string) {
     return this.runQueued(agentId, async () => {
       const agent = await this.getAgentOrThrow(agentId);
@@ -2382,8 +2608,15 @@ export class AgentVcsService {
     git: ReturnType<typeof simpleGit>,
     commitHash: string,
   ): Promise<SnapshotFile[]> {
+    return this.readRepoFilesAtRef(git, commitHash);
+  }
+
+  private async readRepoFilesAtRef(
+    git: ReturnType<typeof simpleGit>,
+    ref: string,
+  ): Promise<SnapshotFile[]> {
     const paths = await git
-      .raw(["ls-tree", "-r", "--name-only", commitHash])
+      .raw(["ls-tree", "-r", "--name-only", ref])
       .then((output) =>
         output
           .split("\n")
@@ -2394,7 +2627,7 @@ export class AgentVcsService {
     const files: SnapshotFile[] = [];
     for (const path of paths) {
       const content = await git
-        .raw(["show", `${commitHash}:${path}`])
+        .raw(["show", `${ref}:${path}`])
         .catch(() => "");
       if (!content) continue;
       files.push({ path, content });
@@ -2765,6 +2998,8 @@ export class AgentVcsService {
             "build/",
             ".env",
             "*.log",
+            ".tuul-manifest.json",
+            "agent.xml",
           ].join("\n") + "\n",
       },
       {
@@ -2876,7 +3111,6 @@ export class AgentVcsService {
 
     const manifest = {
       managedFiles: managedFiles.map((file) => file.path),
-      branch: branchName,
       generatedAt: new Date().toISOString(),
     };
     managedFiles[
@@ -3476,6 +3710,32 @@ export class AgentVcsService {
     };
   }
 
+  private buildResolvedMergeFiles(
+    localFiles: SnapshotFile[],
+    remoteFiles: SnapshotFile[],
+    resolutions: Record<string, "local" | "remote">,
+  ): SnapshotFile[] {
+    const localMap = this.normalizeFilesForDiff(localFiles);
+    const remoteMap = this.normalizeFilesForDiff(remoteFiles);
+    const mergedPaths = Array.from(
+      new Set([...Object.keys(localMap), ...Object.keys(remoteMap)]),
+    )
+      .filter((path) => this.isUserMergeableFile(path))
+      .sort((a, b) => a.localeCompare(b));
+
+    return mergedPaths
+      .map((path) => {
+        const preferredSide = resolutions[path] ?? "local";
+        const content =
+          preferredSide === "remote" ? remoteMap[path] : localMap[path];
+        if (content === undefined) {
+          return null;
+        }
+        return { path, content };
+      })
+      .filter(Boolean) as SnapshotFile[];
+  }
+
   private normalizeFilesForDiff(
     files: Array<{ path: string; content: string }>,
   ) {
@@ -3483,6 +3743,13 @@ export class AgentVcsService {
       acc[file.path] = file.content;
       return acc;
     }, {});
+  }
+
+  private isUserMergeableFile(path: string) {
+    if (!path) return false;
+    if (path === ".tuul-manifest.json") return false;
+    if (path.endsWith("/.gitkeep")) return false;
+    return true;
   }
 
   private async getEffectiveRemote(agent: Agent): Promise<RemoteConfig | null> {

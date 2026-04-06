@@ -12,6 +12,7 @@ import {
 import { UseAgentManagementPipeline } from "../../../common/decorators/use-agent-management-pipeline.decorator";
 import { GitBranchDto } from "../dto/git-branch.dto";
 import { GitCommitDto } from "../dto/git-commit.dto";
+import { GitConflictMergeDto } from "../dto/git-conflict-merge.dto";
 import { GitRemoteDto } from "../dto/git-remote.dto";
 import { GitSwitchBranchDto } from "../dto/git-switch-branch.dto";
 import { AgentVcsService } from "../services/agent-vcs.service";
@@ -50,6 +51,19 @@ export class AgentGitController {
   @Post("/agents/:agentId/git/push/replace-remote")
   async replaceRemoteWithLocal(@Param("agentId") agentId: string) {
     return this.agentVcsService.replaceRemoteWithLocal(agentId);
+  }
+
+  @Get("/agents/:agentId/git/conflicts/review")
+  async getConflictReview(@Param("agentId") agentId: string) {
+    return this.agentVcsService.getConflictReview(agentId);
+  }
+
+  @Post("/agents/:agentId/git/conflicts/merge")
+  async resolveConflictMerge(
+    @Param("agentId") agentId: string,
+    @Body() body: GitConflictMergeDto,
+  ) {
+    return this.agentVcsService.resolveConflictMerge(agentId, body);
   }
 
   @Post("/agents/:agentId/git/fetch")

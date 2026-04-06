@@ -3,8 +3,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import simpleGit from "simple-git";
-import type { Agent, AgentMetadata } from "../../../entities/agent.entity";
 import type { AgentInstance } from "../../../entities/agent-instance.entity";
+import type { Agent, AgentMetadata } from "../../../entities/agent.entity";
 import { AgentRepository } from "../../agent/repositories/agent.repository";
 import { AgentInstanceRepository } from "../repositories/agent-instance.repository";
 import { AgentVersionEntryRepository } from "../repositories/agent-version-entry.repository";
@@ -216,6 +216,8 @@ export class GitSyncService {
         "yarn-debug.log*",
         "yarn-error.log*",
         "pnpm-debug.log*",
+        ".tuul-manifest.json",
+        "agent.xml",
       ].join("\n") + "\n",
       "utf8",
     );
