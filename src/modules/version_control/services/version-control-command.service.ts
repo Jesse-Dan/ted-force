@@ -13,6 +13,7 @@ import { GithubAppService } from "./github-app.service";
 import { GitSyncService } from "./git-sync.service";
 import { AgentParameterVersionRepository } from "../repositories/agent-parameter-version.repository";
 import { AgentToolVersionRepository } from "../repositories/agent-tool-version.repository";
+import { AgentVcsService } from "./agent-vcs.service";
 
 @Service()
 export class VersionControlCommandService {
@@ -39,6 +40,9 @@ export class VersionControlCommandService {
 
   @Autowired()
   private agentToolVersionRepository!: AgentToolVersionRepository;
+
+  @Autowired()
+  private agentVcsService!: AgentVcsService;
 
   async createAgentInstance(agentId: string, payload: CreateAgentInstanceDto) {
     const agent = await this.agentRepository.findById(agentId);
@@ -132,39 +136,27 @@ export class VersionControlCommandService {
       githubLogin && repoName
         ? `https://github.com/${githubLogin}/${repoName}`
         : payload.repositoryUrl;
-    const nextMetadata: AgentMetadata = {
-      ...currentMetadata,
-      repository: this.gitConnectionService.normalize({
-        provider: "github",
-        repositoryUrl,
-        githubLogin,
-        githubAvatarUrl: payload.githubAvatarUrl,
-        repoName,
-        defaultBranch: payload.defaultBranch,
-        installationType: "app",
-        accessToken: payload.accessToken,
-        refreshToken: payload.refreshToken,
-        tokenExpiresAt: payload.tokenExpiresAt,
-        username: payload.username,
-        installationId: payload.installationId,
-        appInstallationUrl:
-          payload.appInstallationUrl ??
-          this.githubAppService.getInstallationUrl({ owner: githubLogin }),
-        appInstallations: payload.appInstallations ?? null,
-        visibility: payload.visibility,
-        autoCreateRepository: payload.autoCreateRepository,
-        commitMode: payload.commitMode,
-        connectedAt: new Date().toISOString(),
-        initializedAt: currentMetadata.repository?.initializedAt ?? null,
-        lastPushAt: currentMetadata.repository?.lastPushAt ?? null,
-        lastPushStatus: currentMetadata.repository?.lastPushStatus ?? "idle",
-        lastPushMessage: currentMetadata.repository?.lastPushMessage ?? null,
-        lastPullRequestUrl: currentMetadata.repository?.lastPullRequestUrl ?? null,
-      }),
-    };
-
-    const updated = await this.agentRepository.updateMetadata(agentId, nextMetadata);
-    return updated.metadata?.repository ?? null;
+    return this.agentVcsService.updateAgentRemote(agentId, {
+      provider: "github",
+      repositoryUrl,
+      githubLogin,
+      githubAvatarUrl: payload.githubAvatarUrl,
+      repoName,
+      defaultBranch: payload.defaultBranch,
+      installationType: "app",
+      accessToken: payload.accessToken,
+      refreshToken: payload.refreshToken,
+      tokenExpiresAt: payload.tokenExpiresAt,
+      username: payload.username,
+      installationId: payload.installationId,
+      appInstallationUrl:
+        payload.appInstallationUrl ??
+        this.githubAppService.getInstallationUrl({ owner: githubLogin }),
+      appInstallations: payload.appInstallations ?? null,
+      visibility: payload.visibility as "private" | "public" | "internal" | undefined,
+      autoCreateRepository: payload.autoCreateRepository,
+      commitMode: payload.commitMode as "direct" | "pull_request" | undefined,
+    });
   }
 
   async initializeGitRepository(agentId: string) {

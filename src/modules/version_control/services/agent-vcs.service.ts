@@ -18,8 +18,10 @@ import { OrganizationRepository } from "../../organization/repositories/organiza
 import { OrganizationRepositoryConnectionRepository } from "../../organization/repositories/organization-repository-connection.repository";
 import { AgentInstanceRepository } from "../repositories/agent-instance.repository";
 import { AgentParameterVersionRepository } from "../repositories/agent-parameter-version.repository";
+import { AgentRepositoryConnectionRepository } from "../repositories/agent-repository-connection.repository";
 import { AgentToolVersionRepository } from "../repositories/agent-tool-version.repository";
 import { AgentVersionEntryRepository } from "../repositories/agent-version-entry.repository";
+import { GitConnectionService } from "./git-connection.service";
 
 type SnapshotShape = {
   schemaVersion: 1;
@@ -126,7 +128,13 @@ export class AgentVcsService {
   private agentConfigRepository!: AgentConfigRepository;
 
   @Autowired()
+  private gitConnectionService!: GitConnectionService;
+
+  @Autowired()
   private agentInstanceRepository!: AgentInstanceRepository;
+
+  @Autowired()
+  private agentRepositoryConnectionRepository!: AgentRepositoryConnectionRepository;
 
   @Autowired()
   private agentVersionEntryRepository!: AgentVersionEntryRepository;
@@ -173,11 +181,17 @@ export class AgentVcsService {
 
   async createBranch(
     agentId: string,
-    payload: { name: string; fromBranchId?: string; fromBranchName?: string },
+    payload: {
+      name: string;
+      fromBranchId?: string;
+      fromBranchName?: string;
+      pushAfterCreate?: boolean;
+    },
   ) {
     return this.runQueued(agentId, async () => {
       const agent = await this.getAgentOrThrow(agentId);
       const defaultBranch = this.getDefaultBranchName(agent);
+      const currentRepository = agent.metadata?.repository ?? null;
       const normalizedBranchName = this.normalizeBranchName(
         payload.name,
         defaultBranch,
@@ -256,6 +270,26 @@ export class AgentVcsService {
           ...createdBranch,
           commitHash,
         });
+        let gitResult: any = null;
+        if (payload.pushAfterCreate) {
+          gitResult = await this.syncCommitToGit(agent, createdBranch, entry).catch(
+            () => null,
+          );
+
+          const previousBranchName =
+            currentRepository?.currentBranchName ??
+            sourceBranch?.version.gitBranch ??
+            sourceBranch?.version.version ??
+            defaultBranch;
+          const previousBranchId = currentRepository?.currentBranchId ?? null;
+          const repoPath = this.getRepoPath(agent.id);
+          const git = simpleGit(repoPath);
+          await this.checkoutBranch(git, previousBranchName).catch(() => null);
+          await this.updateRepositoryMetadata(agent, {
+            currentBranchId: previousBranchId,
+            currentBranchName: previousBranchName,
+          });
+        }
         return {
           branch: this.serializeBranch(
             { ...createdBranch, commitHash },
@@ -267,6 +301,7 @@ export class AgentVcsService {
             normalizedBranchName,
             normalizedBranchName === defaultBranch,
           ),
+          git: gitResult,
         };
       }
 
@@ -391,11 +426,31 @@ export class AgentVcsService {
       : await this.agentVersionEntryRepository.findByAgentId(agentId);
 
     const tuulSerialized = serializeEntries(tuulEntries);
-    const tuulHashes = new Set(
-      tuulSerialized
-        .map((c) => (c.hash ?? "").trim())
-        .filter((hash) => hash.length > 0),
-    );
+    const tuulHashes = new Set<string>();
+    const tuulCommitMirrors = tuulEntries.map((entry) => ({
+      message: String(entry.message ?? "").trim(),
+      branchName: String(
+        entry.metadata?.branch?.name ??
+          entry.metadata?.git?.branch ??
+          entry.instance?.version?.gitBranch ??
+          entry.instance?.version?.version ??
+          defaultBranch,
+      ).trim(),
+      timestamp:
+        entry.releasedAt instanceof Date
+          ? entry.releasedAt.getTime()
+          : new Date(entry.releasedAt).getTime(),
+      nativeCommitHash: String(
+        entry.metadata?.git?.nativeCommitHash ?? "",
+      ).trim(),
+      status: String(entry.metadata?.git?.status ?? "pending").trim(),
+    }));
+    for (const entry of tuulEntries) {
+      const dbHash = String(entry.commitHash ?? "").trim();
+      const nativeHash = String(entry.metadata?.git?.nativeCommitHash ?? "").trim();
+      if (dbHash) tuulHashes.add(dbHash);
+      if (nativeHash) tuulHashes.add(nativeHash);
+    }
 
     // Also surface commits made outside of Tuul (directly in Git).
     // These are read-only in Tuul since we don't have persisted snapshots for them.
@@ -447,6 +502,19 @@ export class AgentVcsService {
         );
         for (const commit of gitCommits) {
           if (!commit.hash || tuulHashes.has(commit.hash)) continue;
+          const commitTimestamp = Number(new Date(commit.timestamp).getTime()) || 0;
+          const normalizedMessage = String(commit.message ?? "").trim();
+          const isMirroredTuulCommit = tuulCommitMirrors.some((entry) => {
+            if (entry.nativeCommitHash && entry.nativeCommitHash === commit.hash) {
+              return true;
+            }
+            if (entry.branchName !== ref.branchName) return false;
+            if (entry.message !== normalizedMessage) return false;
+            if (entry.status !== "success") return false;
+            if (!entry.timestamp || !commitTimestamp) return false;
+            return Math.abs(entry.timestamp - commitTimestamp) <= 5 * 60 * 1000;
+          });
+          if (isMirroredTuulCommit) continue;
           const existing = externalCommitsByHash.get(commit.hash);
           if (!existing) {
             externalCommitsByHash.set(commit.hash, {
@@ -636,6 +704,7 @@ export class AgentVcsService {
             message: gitResult.message,
             remoteUrl: gitResult.remoteUrl,
             branch: gitResult.branch,
+            nativeCommitHash: gitResult.nativeCommitHash ?? null,
           },
         });
       }
@@ -1248,14 +1317,11 @@ export class AgentVcsService {
 
   async getAgentRemote(agentId: string) {
     const agent = await this.getAgentOrThrow(agentId);
-    const agentRemote = (agent.metadata?.repository as RemoteConfig | null) ?? null;
+    const agentRemote = await this.getPersistedAgentRemote(agent);
     const organizationRemote = agent.organizationId
       ? await this.getOrganizationRemote(agent.organizationId)
       : null;
-    const effective =
-      agentRemote?.isConnected || agentRemote?.repositoryUrl || agentRemote?.githubLogin
-        ? agentRemote
-        : ((organizationRemote as RemoteConfig | null) ?? null);
+    const effective = agentRemote ?? ((organizationRemote as RemoteConfig | null) ?? null);
     return {
       mode: agentRemote?.mode ?? "internal",
       agentRemote,
@@ -1265,103 +1331,159 @@ export class AgentVcsService {
     };
   }
 
-  async updateAgentRemote(agentId: string, payload: Partial<RemoteConfig>) {
+  async updateAgentRemote(
+    agentId: string,
+    payload: Partial<RemoteConfig>,
+    options?: { autoPublish?: boolean },
+  ) {
     const agent = await this.getAgentOrThrow(agentId);
+    const existingConnection =
+      await this.agentRepositoryConnectionRepository.findByAgentId(agentId);
     const currentRepository = agent.metadata?.repository ?? null;
     const githubLogin =
       (payload.githubLogin as string | null | undefined)?.trim?.() ||
+      existingConnection?.githubLogin ||
       currentRepository?.githubLogin ||
       currentRepository?.username ||
       null;
     const githubAvatarUrl =
       (payload.githubAvatarUrl as string | null | undefined)?.trim?.() ||
+      existingConnection?.githubAvatarUrl ||
       currentRepository?.githubAvatarUrl ||
       null;
     const repoName =
-      payload.repoName?.trim?.() || currentRepository?.repoName || agent.slug;
+      payload.repoName?.trim?.() ||
+      existingConnection?.repoName ||
+      currentRepository?.repoName ||
+      agent.slug;
     const repositoryUrl =
       githubLogin && repoName
         ? `https://github.com/${githubLogin}/${repoName}`
         : (payload.repositoryUrl ?? currentRepository?.repositoryUrl ?? null);
-    const nextRepository: RemoteConfig = {
+    const normalized = this.gitConnectionService.normalize({
       provider:
-        (payload.provider as RemoteConfig["provider"]) ??
+        (payload.provider as string | null | undefined) ??
+        existingConnection?.provider ??
         currentRepository?.provider ??
         "github",
-      mode:
-        repositoryUrl || githubLogin || repoName
-          ? "git"
-          : (currentRepository?.mode ?? "internal"),
-      localRepoPath:
-        currentRepository?.localRepoPath ?? this.getRepoPath(agentId),
-      repositoryUrl,
+      repositoryUrl: repositoryUrl ?? "",
       githubLogin,
       githubAvatarUrl,
-      owner: null,
       repoName,
-      slug:
-        githubLogin && repoName
-          ? `${githubLogin}/${repoName}`
-          : (currentRepository?.slug ?? null),
-      host: currentRepository?.host ?? "github.com",
       defaultBranch:
-        payload.defaultBranch ?? currentRepository?.defaultBranch ?? "main",
-      currentBranchId: currentRepository?.currentBranchId ?? null,
-      currentBranchName: currentRepository?.currentBranchName ?? null,
-      installationType: currentRepository?.installationType ?? "none",
+        payload.defaultBranch ??
+        existingConnection?.defaultBranch ??
+        currentRepository?.defaultBranch ??
+        "main",
+      installationType:
+        (payload.installationType as string | null | undefined) ??
+        existingConnection?.installationType ??
+        currentRepository?.installationType ??
+        "app",
       accessToken:
-        payload.accessToken ?? currentRepository?.accessToken ?? null,
-      refreshToken: currentRepository?.refreshToken ?? null,
-      tokenExpiresAt: currentRepository?.tokenExpiresAt ?? null,
-      username: payload.username ?? currentRepository?.username ?? null,
-      appClientId:
-        currentRepository?.appClientId ??
-        process.env.GIT_APP_CLIENT_ID?.trim() ??
+        payload.accessToken ??
+        existingConnection?.accessToken ??
+        currentRepository?.accessToken ??
         null,
-      installationId: currentRepository?.installationId ?? null,
-      appInstallationUrl: currentRepository?.appInstallationUrl ?? null,
-      appInstallations: currentRepository?.appInstallations ?? null,
+      refreshToken:
+        payload.refreshToken ??
+        existingConnection?.refreshToken ??
+        currentRepository?.refreshToken ??
+        null,
+      tokenExpiresAt:
+        payload.tokenExpiresAt ??
+        existingConnection?.tokenExpiresAt ??
+        currentRepository?.tokenExpiresAt ??
+        null,
+      username:
+        payload.username ??
+        existingConnection?.username ??
+        currentRepository?.username ??
+        null,
+      installationId:
+        payload.installationId ??
+        existingConnection?.appInstallationId ??
+        currentRepository?.installationId ??
+        null,
+      appInstallationUrl:
+        payload.appInstallationUrl ??
+        existingConnection?.appInstallationUrl ??
+        currentRepository?.appInstallationUrl ??
+        null,
+      appInstallations:
+        payload.appInstallations ??
+        existingConnection?.appInstallations ??
+        currentRepository?.appInstallations ??
+        null,
       visibility:
-        (payload.visibility as RemoteConfig["visibility"]) ??
+        (payload.visibility as string | null | undefined) ??
+        existingConnection?.visibility ??
         currentRepository?.visibility ??
         "private",
       autoCreateRepository:
         payload.autoCreateRepository ??
+        existingConnection?.autoCreateRepository ??
         currentRepository?.autoCreateRepository ??
         true,
       commitMode:
-        (payload.commitMode as RemoteConfig["commitMode"]) ??
+        (payload.commitMode as string | null | undefined) ??
+        existingConnection?.commitMode ??
         currentRepository?.commitMode ??
         "direct",
-      isConnected: Boolean(repositoryUrl && githubLogin),
-      remoteEnabled: true,
-      inheritsOrganizationRemote: false,
-      remoteSource: "agent",
-      connectedAt: currentRepository?.connectedAt ?? new Date().toISOString(),
+      connectedAt:
+        existingConnection?.connectedAt ??
+        currentRepository?.connectedAt ??
+        new Date().toISOString(),
       initializedAt: currentRepository?.initializedAt ?? null,
       lastPushAt: currentRepository?.lastPushAt ?? null,
-      lastPullAt: currentRepository?.lastPullAt ?? null,
       lastPushStatus: currentRepository?.lastPushStatus ?? "idle",
       lastPushMessage: currentRepository?.lastPushMessage ?? null,
       lastPullRequestUrl: currentRepository?.lastPullRequestUrl ?? null,
-      webUrl: repositoryUrl,
-      cloneUrlHttps: repositoryUrl,
-      cloneUrlSsh: currentRepository?.cloneUrlSsh ?? null,
-      branchUrl: currentRepository?.branchUrl ?? null,
-      compareUrlTemplate: currentRepository?.compareUrlTemplate ?? null,
-      health: {
-        isValidUrl: Boolean(repositoryUrl),
-        ownerResolved: Boolean(githubLogin),
-        repoResolved: Boolean(repoName),
-        providerSupported: true,
-        readyForAutomaticPush: Boolean(
-          repositoryUrl &&
-          githubLogin &&
-          (payload.accessToken ?? currentRepository?.accessToken),
-        ),
-      },
-    };
-    await this.updateRepositoryMetadata(agent, nextRepository);
+    });
+
+    await this.agentRepositoryConnectionRepository.save({
+      id: existingConnection?.id,
+      agentId,
+      isEnabled: true,
+      provider: normalized.provider,
+      connectionSource: "agent",
+      githubLogin: normalized.githubLogin ?? null,
+      githubAvatarUrl: normalized.githubAvatarUrl ?? null,
+      repositoryUrl: normalized.repositoryUrl ?? null,
+      repoName: normalized.repoName ?? null,
+      defaultBranch: normalized.defaultBranch ?? "main",
+      installationType: normalized.installationType ?? "app",
+      accessToken: normalized.accessToken ?? null,
+      refreshToken: normalized.refreshToken ?? null,
+      tokenExpiresAt: normalized.tokenExpiresAt ?? null,
+      username: normalized.username ?? null,
+      appInstallationId: normalized.installationId ?? null,
+      appClientId: normalized.appClientId ?? null,
+      appInstallationUrl: normalized.appInstallationUrl ?? null,
+      appInstallations: normalized.appInstallations ?? null,
+      visibility: normalized.visibility ?? "private",
+      autoCreateRepository: normalized.autoCreateRepository ?? true,
+      commitMode: normalized.commitMode ?? "direct",
+      connectedAt: normalized.connectedAt ?? new Date().toISOString(),
+    });
+
+    await this.updateRepositoryMetadata(agent, {
+      ...normalized,
+      mode: normalized.repositoryUrl || normalized.githubLogin ? "git" : "internal",
+      localRepoPath: currentRepository?.localRepoPath ?? this.getRepoPath(agentId),
+      currentBranchId: currentRepository?.currentBranchId ?? null,
+      currentBranchName: currentRepository?.currentBranchName ?? null,
+      lastFetchAt: (currentRepository as any)?.lastFetchAt ?? null,
+      lastPullAt: currentRepository?.lastPullAt ?? null,
+      remoteEnabled: true,
+      inheritsOrganizationRemote: false,
+      remoteSource: "agent",
+    });
+
+    if (options?.autoPublish) {
+      await this.push(agentId).catch(() => null);
+    }
+
     return this.getAgentRemote(agentId);
   }
 
@@ -1510,65 +1632,78 @@ export class AgentVcsService {
       organizationRemote.defaultBranch?.trim() ||
       "main";
     const repositoryUrl = `https://github.com/${organizationRemote.githubLogin}/${repoName}`;
-
-    await this.updateRepositoryMetadata(agent, {
+    const currentRepository = agent.metadata?.repository ?? null;
+    const existingConnection =
+      await this.agentRepositoryConnectionRepository.findByAgentId(agentId);
+    const normalized = this.gitConnectionService.normalize({
       provider: "github",
-      mode: "git",
-      localRepoPath:
-        agent.metadata?.repository?.localRepoPath ?? this.getRepoPath(agentId),
       repositoryUrl,
       githubLogin: organizationRemote.githubLogin ?? null,
       githubAvatarUrl: organizationRemote.githubAvatarUrl ?? null,
-      owner: null,
       repoName,
-      slug: `${organizationRemote.githubLogin}/${repoName}`,
-      host: "github.com",
       defaultBranch,
-      currentBranchId: agent.metadata?.repository?.currentBranchId ?? null,
-      currentBranchName: agent.metadata?.repository?.currentBranchName ?? null,
       installationType:
-        organizationRemote.authType === "github_app" ? "app" : "token",
+        organizationRemote.authType === "github_app" ? "app" : "app",
       accessToken: organizationRemote.accessToken ?? null,
       username: organizationRemote.username ?? null,
+      installationId: organizationRemote.appInstallationId ?? null,
+      visibility:
+        (payload?.visibility as string | undefined) ??
+        currentRepository?.visibility ??
+        "private",
+      autoCreateRepository: currentRepository?.autoCreateRepository ?? true,
+      commitMode: currentRepository?.commitMode ?? "direct",
+      connectedAt: new Date().toISOString(),
+      initializedAt: currentRepository?.initializedAt ?? null,
+      lastPushAt: currentRepository?.lastPushAt ?? null,
+      lastPushStatus: currentRepository?.lastPushStatus ?? "idle",
+      lastPushMessage: currentRepository?.lastPushMessage ?? null,
+      lastPullRequestUrl: currentRepository?.lastPullRequestUrl ?? null,
+    });
+
+    await this.agentRepositoryConnectionRepository.save({
+      id: existingConnection?.id,
+      agentId,
+      isEnabled: true,
+      provider: normalized.provider,
+      connectionSource: "organization",
+      githubLogin: normalized.githubLogin ?? null,
+      githubAvatarUrl: normalized.githubAvatarUrl ?? null,
+      repositoryUrl: normalized.repositoryUrl ?? null,
+      repoName: normalized.repoName ?? null,
+      defaultBranch: normalized.defaultBranch ?? "main",
+      installationType: normalized.installationType ?? "app",
+      accessToken: normalized.accessToken ?? null,
+      refreshToken: normalized.refreshToken ?? null,
+      tokenExpiresAt: normalized.tokenExpiresAt ?? null,
+      username: normalized.username ?? null,
+      appInstallationId: normalized.installationId ?? null,
       appClientId:
         organizationRemote.appClientId ??
         process.env.GIT_APP_CLIENT_ID?.trim() ??
         null,
-      installationId: organizationRemote.appInstallationId ?? null,
-      visibility:
-        (payload?.visibility as RemoteConfig["visibility"] | undefined) ??
-        agent.metadata?.repository?.visibility ??
-        "private",
-      autoCreateRepository:
-        agent.metadata?.repository?.autoCreateRepository ?? true,
-      commitMode: agent.metadata?.repository?.commitMode ?? "direct",
-      isConnected: true,
+      appInstallationUrl: normalized.appInstallationUrl ?? null,
+      appInstallations: normalized.appInstallations ?? null,
+      visibility: normalized.visibility ?? "private",
+      autoCreateRepository: normalized.autoCreateRepository ?? true,
+      commitMode: normalized.commitMode ?? "direct",
+      connectedAt: normalized.connectedAt ?? new Date().toISOString(),
+    });
+
+    await this.updateRepositoryMetadata(agent, {
+      ...normalized,
+      mode: "git",
+      localRepoPath: currentRepository?.localRepoPath ?? this.getRepoPath(agentId),
+      currentBranchId: currentRepository?.currentBranchId ?? null,
+      currentBranchName: currentRepository?.currentBranchName ?? null,
+      lastFetchAt: (currentRepository as any)?.lastFetchAt ?? null,
+      lastPullAt: currentRepository?.lastPullAt ?? null,
       remoteEnabled: true,
       inheritsOrganizationRemote: true,
       remoteSource: "agent",
-      connectedAt: new Date().toISOString(),
-      initializedAt: agent.metadata?.repository?.initializedAt ?? null,
-      lastPushAt: agent.metadata?.repository?.lastPushAt ?? null,
-      lastPullAt: agent.metadata?.repository?.lastPullAt ?? null,
-      lastPushStatus: agent.metadata?.repository?.lastPushStatus ?? "idle",
-      lastPushMessage: agent.metadata?.repository?.lastPushMessage ?? null,
-      lastPullRequestUrl:
-        agent.metadata?.repository?.lastPullRequestUrl ?? null,
-      webUrl: repositoryUrl,
-      cloneUrlHttps: `${repositoryUrl}.git`,
-      cloneUrlSsh: `git@github.com:${organizationRemote.githubLogin}/${repoName}.git`,
-      branchUrl: `${repositoryUrl}/tree/${encodeURIComponent(defaultBranch)}`,
-      compareUrlTemplate: `${repositoryUrl}/compare/{base}...{head}`,
-      health: {
-        isValidUrl: true,
-        ownerResolved: true,
-        repoResolved: true,
-        providerSupported: true,
-        readyForAutomaticPush: Boolean(
-          organizationRemote.accessToken || organizationRemote.appInstallationId,
-        ),
-      },
     });
+
+    await this.push(agentId).catch(() => null);
 
     return this.getAgentRemote(agentId);
   }
@@ -1738,6 +1873,7 @@ export class AgentVcsService {
         message: entry.metadata?.git?.message ?? null,
         remoteUrl: entry.metadata?.git?.remoteUrl ?? null,
         branch: entry.metadata?.git?.branch ?? resolvedBranchName,
+        nativeCommitHash: entry.metadata?.git?.nativeCommitHash ?? null,
       },
     };
   }
@@ -1829,6 +1965,26 @@ export class AgentVcsService {
 
   async getWorkingStatus(agentId: string) {
     const agent = await this.getAgentOrThrow(agentId);
+    const currentBranch = await this.resolveBranch(agentId, {
+      allowDefaultFallback: true,
+    });
+    const defaultBranch = this.getDefaultBranchName(agent);
+    const branchName =
+      currentBranch?.version.gitBranch ??
+      currentBranch?.version.version ??
+      defaultBranch;
+    const currentHead = currentBranch
+      ? await this.agentVersionEntryRepository.findLatestForInstance(currentBranch.id)
+      : null;
+    const liveSnapshot = await this.buildLiveSnapshot(agentId);
+    const liveFiles = this.generateRepositoryFiles(liveSnapshot, branchName);
+    const headFiles = currentHead?.metadata?.files ?? [];
+    const managedDiff = this.buildFileDiff(headFiles, liveFiles, {
+      type: "working-tree",
+      branch: branchName,
+      base: currentHead?.commitHash ?? "head",
+    });
+    const repository = await this.getEffectiveRemote(agent);
     const repoPath = this.getRepoPath(agentId);
     await mkdir(repoPath, { recursive: true });
     const git = simpleGit(repoPath);
@@ -1837,21 +1993,93 @@ export class AgentVcsService {
     if (!isRepo) {
       return {
         isRepo: false,
-        branch: this.getDefaultBranchName(agent),
+        branch: branchName,
+        tracking: null,
         ahead: 0,
         behind: 0,
+        isClean: managedDiff.changes.length === 0,
+        remoteConfigured: Boolean(repository?.repositoryUrl),
+        repositoryUrl: repository?.repositoryUrl ?? null,
+        connectionScope: repository?.inheritsOrganizationRemote
+          ? "organization"
+          : repository?.isConnected
+            ? "agent"
+            : "none",
+        lastFetchAt: (agent.metadata?.repository as any)?.lastFetchAt ?? null,
+        lastPushAt: agent.metadata?.repository?.lastPushAt ?? null,
+        lastPushStatus: agent.metadata?.repository?.lastPushStatus ?? "idle",
+        headCommitHash: currentHead?.commitHash ?? null,
+        headCommitMessage: currentHead?.message ?? null,
+        managedDiff: {
+          changed: managedDiff.changes.length > 0,
+          count: managedDiff.changes.length,
+          files: managedDiff.changes.map((change) => ({
+            path: change.path,
+            status: change.status,
+            oldContent: change.oldContent,
+            newContent: change.newContent,
+          })),
+        },
+        counts: {
+          total: managedDiff.changes.length,
+          conflicted: 0,
+          staged: 0,
+          modified: managedDiff.changes.filter((change) => change.status === "modified").length,
+          created: managedDiff.changes.filter((change) => change.status === "added").length,
+          deleted: managedDiff.changes.filter((change) => change.status === "removed").length,
+          renamed: 0,
+          untracked: 0,
+        },
         files: [],
       };
     }
 
     const status = await git.status();
+    const files = (status.files ?? []).map((file) => ({
+      path: file.path,
+      index: file.index,
+      workingDir: (file as any).working_dir ?? (file as any).workingDir ?? "",
+    }));
+
     return {
       isRepo: true,
-      branch: status.current ?? this.getDefaultBranchName(agent),
+      branch: status.current ?? branchName,
       tracking: status.tracking ?? null,
       ahead: status.ahead ?? 0,
       behind: status.behind ?? 0,
       isClean: Boolean(status.isClean?.()),
+      remoteConfigured: Boolean(repository?.repositoryUrl),
+      repositoryUrl: repository?.repositoryUrl ?? null,
+      connectionScope: repository?.inheritsOrganizationRemote
+        ? "organization"
+        : repository?.isConnected
+          ? "agent"
+          : "none",
+      lastFetchAt: (agent.metadata?.repository as any)?.lastFetchAt ?? null,
+      lastPushAt: agent.metadata?.repository?.lastPushAt ?? null,
+      lastPushStatus: agent.metadata?.repository?.lastPushStatus ?? "idle",
+      headCommitHash: currentHead?.commitHash ?? null,
+      headCommitMessage: currentHead?.message ?? null,
+      managedDiff: {
+        changed: managedDiff.changes.length > 0,
+        count: managedDiff.changes.length,
+        files: managedDiff.changes.map((change) => ({
+          path: change.path,
+          status: change.status,
+          oldContent: change.oldContent,
+          newContent: change.newContent,
+        })),
+      },
+      counts: {
+        total: files.length,
+        conflicted: (status.conflicted ?? []).length,
+        staged: (status.staged ?? []).length,
+        modified: (status.modified ?? []).length,
+        created: (status.created ?? []).length,
+        deleted: (status.deleted ?? []).length,
+        renamed: (status.renamed ?? []).length,
+        untracked: (status.not_added ?? []).length,
+      },
       conflicted: status.conflicted ?? [],
       created: status.created ?? [],
       deleted: status.deleted ?? [],
@@ -1859,11 +2087,7 @@ export class AgentVcsService {
       renamed: status.renamed ?? [],
       notAdded: status.not_added ?? [],
       staged: status.staged ?? [],
-      files: (status.files ?? []).map((file) => ({
-        path: file.path,
-        index: file.index,
-        workingDir: (file as any).working_dir ?? (file as any).workingDir ?? "",
-      })),
+      files,
     };
   }
 
@@ -2382,9 +2606,19 @@ export class AgentVcsService {
         .catch(() => null);
     }
 
+    const nativeCommitHash = await git
+      .revparse(["HEAD"])
+      .then((value) => value.trim())
+      .catch(() => null);
+
     let pushed = false;
     let pushMessage = entry.message?.trim() || "Update agent";
-    if (repository?.repositoryUrl) {
+
+    // Agent bootstrap / local init must never publish remotely.
+    // We only want the `.tuul-vcs` repo + local commit materialized here.
+    const allowRemotePush = !options?.initializeRepository;
+
+    if (allowRemotePush && repository?.repositoryUrl) {
       if (repository.autoCreateRepository) {
         await this.ensureRemoteRepository(repository);
       }
@@ -2410,20 +2644,29 @@ export class AgentVcsService {
       lastPushAt: pushed
         ? new Date().toISOString()
         : (agent.metadata?.repository?.lastPushAt ?? null),
-      lastPushStatus: repository?.repositoryUrl
+      lastPushStatus: allowRemotePush && repository?.repositoryUrl
         ? pushed
           ? "success"
           : "failed"
         : "idle",
-      lastPushMessage: pushMessage,
+      lastPushMessage: allowRemotePush ? pushMessage : null,
+    });
+
+    await this.agentVersionEntryRepository.updateMetadata(entry.id, {
+      ...(entry.metadata ?? {}),
+      git: {
+        ...(entry.metadata?.git ?? {}),
+        nativeCommitHash,
+      },
     });
 
     return {
-      success: !repository?.repositoryUrl || pushed,
+      success: !allowRemotePush || !repository?.repositoryUrl || pushed,
       pushed,
       branch: branchName,
-      message: pushMessage,
-      remoteUrl: repository?.repositoryUrl ?? null,
+      message: allowRemotePush ? pushMessage : "Local repository initialized.",
+      remoteUrl: allowRemotePush ? repository?.repositoryUrl ?? null : null,
+      nativeCommitHash,
     };
   }
 
@@ -2520,9 +2763,64 @@ export class AgentVcsService {
   }
 
   private async getEffectiveRemote(agent: Agent): Promise<RemoteConfig | null> {
-    // IMPORTANT: Git connections are per-agent. We do not inherit organization-level
-    // remotes or tokens, to avoid cross-organization leaks and accidental reuse.
+    const persisted = await this.getPersistedAgentRemote(agent);
+    if (persisted) {
+      return persisted;
+    }
+
     return (agent.metadata?.repository as RemoteConfig | null) ?? null;
+  }
+
+  private async getPersistedAgentRemote(agent: Agent): Promise<RemoteConfig | null> {
+    const connection =
+      await this.agentRepositoryConnectionRepository.findByAgentId(agent.id);
+    if (!connection?.isEnabled) {
+      return null;
+    }
+
+    const currentRepository = agent.metadata?.repository ?? null;
+    const normalized = this.gitConnectionService.normalize({
+      provider: connection.provider,
+      repositoryUrl:
+        connection.repositoryUrl ??
+        (connection.githubLogin && connection.repoName
+          ? `https://github.com/${connection.githubLogin}/${connection.repoName}`
+          : ""),
+      githubLogin: connection.githubLogin ?? null,
+      githubAvatarUrl: connection.githubAvatarUrl ?? null,
+      repoName: connection.repoName ?? agent.slug,
+      defaultBranch: connection.defaultBranch ?? "main",
+      installationType: connection.installationType ?? "app",
+      accessToken: connection.accessToken ?? null,
+      refreshToken: connection.refreshToken ?? null,
+      tokenExpiresAt: connection.tokenExpiresAt ?? null,
+      username: connection.username ?? null,
+      installationId: connection.appInstallationId ?? null,
+      appInstallationUrl: connection.appInstallationUrl ?? null,
+      appInstallations: connection.appInstallations ?? null,
+      visibility: connection.visibility ?? "private",
+      autoCreateRepository: connection.autoCreateRepository,
+      commitMode: connection.commitMode ?? "direct",
+      connectedAt: connection.connectedAt ?? currentRepository?.connectedAt ?? null,
+      initializedAt: currentRepository?.initializedAt ?? null,
+      lastPushAt: currentRepository?.lastPushAt ?? null,
+      lastPushStatus: currentRepository?.lastPushStatus ?? "idle",
+      lastPushMessage: currentRepository?.lastPushMessage ?? null,
+      lastPullRequestUrl: currentRepository?.lastPullRequestUrl ?? null,
+    });
+
+    return {
+      ...normalized,
+      mode: "git",
+      localRepoPath: currentRepository?.localRepoPath ?? this.getRepoPath(agent.id),
+      currentBranchId: currentRepository?.currentBranchId ?? null,
+      currentBranchName: currentRepository?.currentBranchName ?? null,
+      lastFetchAt: (currentRepository as any)?.lastFetchAt ?? null,
+      lastPullAt: currentRepository?.lastPullAt ?? null,
+      remoteEnabled: true,
+      inheritsOrganizationRemote: connection.connectionSource === "organization",
+      remoteSource: "agent",
+    } as RemoteConfig;
   }
 
   private async ensureRemote(

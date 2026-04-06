@@ -2,7 +2,9 @@ import { Service } from "fragment-ts";
 import jwt from "jsonwebtoken";
 
 type GitHubAppStatePayload = {
-  agentId: string;
+  connectionScope: "agent" | "organization";
+  agentId?: string | null;
+  organizationId?: string | null;
   redirectUri: string;
   repoName?: string | null;
   defaultBranch?: string | null;
@@ -45,6 +47,10 @@ export class GithubAppService {
 
   getConnectUrl(payload: Omit<GitHubAppStatePayload, "redirectUri"> & { redirectUri?: string | null }) {
     this.ensureConfigured();
+
+    if (!payload.agentId && !payload.organizationId) {
+      throw new Error("GitHub connection requires an agent or organization target.");
+    }
 
     const resolvedRedirectUri = payload.redirectUri?.trim() || this.redirectUri;
     const state = this.signState({

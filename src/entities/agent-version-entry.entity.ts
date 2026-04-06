@@ -15,6 +15,7 @@ export interface VersionEntryMetadata {
     message?: string | null;
     remoteUrl?: string | null;
     branch?: string | null;
+    nativeCommitHash?: string | null;
   } | null;
   branch?: {
     id?: string | null;

@@ -9,6 +9,7 @@ import {
 } from "typeorm";
 import { AgentConfig } from "./agent-config.entity";
 import { AgentConversation } from "./agent-conversation.entity";
+import { AgentRepositoryConnection } from "./agent-repository-connection.entity";
 import { AgentAnalytics } from "./agent-analytics.entity";
 import { AgentEnvironmentVariable } from "./agent-environment-variable.entity";
 import { AgentInstance } from "./agent-instance.entity";
@@ -147,6 +148,9 @@ export class Agent extends AuditableEntity {
     cascade: true,
   })
   config!: AgentConfig;
+
+  @OneToOne(() => AgentRepositoryConnection, (connection) => connection.agent)
+  repositoryConnection?: AgentRepositoryConnection | null;
 
   @OneToMany(
     () => AgentEnvironmentVariable,

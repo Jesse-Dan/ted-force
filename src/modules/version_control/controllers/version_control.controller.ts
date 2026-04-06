@@ -5,6 +5,7 @@ import { CommitInstanceSnapshotDto } from "../dto/commit-instance-snapshot.dto";
 import { CreateAgentInstanceDto } from "../dto/create-agent-instance.dto";
 import { CreateVersionEntryDto } from "../dto/create-version-entry.dto";
 import { VersionControlCommandService } from "../services/version-control-command.service";
+import { AgentVcsService } from "../services/agent-vcs.service";
 import { GithubAppService } from "../services/github-app.service";
 import { VersionControlQueryService } from "../services/version-control-query.service";
 import { VersionControlSnapshotService } from "../services/version-control-snapshot.service";
@@ -17,6 +18,9 @@ export class VersionControlController {
 
   @Autowired()
   private versionControlCommandService!: VersionControlCommandService;
+
+  @Autowired()
+  private agentVcsService!: AgentVcsService;
 
   @Autowired()
   private versionControlSnapshotService!: VersionControlSnapshotService;
@@ -246,6 +250,7 @@ export class VersionControlController {
     @Query("defaultBranch") defaultBranch?: string,
   ) {
     return this.githubAppService.getConnectUrl({
+      connectionScope: "agent",
       agentId,
       redirectUri,
       repoName,
@@ -261,9 +266,24 @@ export class VersionControlController {
     @Query("defaultBranch") defaultBranch?: string,
   ) {
     return this.githubAppService.getConnectUrl({
+      connectionScope: "agent",
       agentId,
       redirectUri,
       repoName,
+      defaultBranch,
+    });
+  }
+
+  @Get("/organizations/:organizationId/git/github/connect-url")
+  async getOrganizationGithubConnectUrl(
+    @Param("organizationId") organizationId: string,
+    @Query("redirectUri") redirectUri?: string,
+    @Query("defaultBranch") defaultBranch?: string,
+  ) {
+    return this.githubAppService.getConnectUrl({
+      connectionScope: "organization",
+      organizationId,
+      redirectUri,
       defaultBranch,
     });
   }
@@ -275,7 +295,7 @@ export class VersionControlController {
     @Query("state") state: string,
   ) {
     const payload = this.githubAppService.verifyState(state);
-    if (payload.agentId !== agentId) {
+    if (payload.connectionScope !== "agent" || payload.agentId !== agentId) {
       throw new Error("GitHub App state does not match the target agent.");
     }
 
@@ -288,30 +308,34 @@ export class VersionControlController {
       ? `https://github.com/${githubLogin}/${repoName}`
       : "";
 
-    return this.versionControlCommandService.connectGitRepository(agentId, {
-      provider: "github",
-      repositoryUrl,
-      githubLogin,
-      githubAvatarUrl: user.avatarUrl ?? undefined,
-      repoName,
-      defaultBranch: payload.defaultBranch?.trim() || "main",
-      installationType: "app",
-      accessToken: token.accessToken,
-      refreshToken: token.refreshToken ?? undefined,
-      tokenExpiresAt: token.expiresIn
-        ? new Date(Date.now() + token.expiresIn * 1000).toISOString()
-        : undefined,
-      username: user.login ?? undefined,
-      installationId:
-        installations.find((installation) => installation.accountLogin === githubLogin)?.id ??
-        installations[0]?.id ??
-        undefined,
-      appInstallationUrl:
-        this.githubAppService.getInstallationUrl({ owner: githubLogin }) ?? undefined,
-      appInstallations: installations,
-      visibility: "private",
-      autoCreateRepository: true,
-    });
+    return this.agentVcsService.updateAgentRemote(
+      agentId,
+      {
+        provider: "github",
+        repositoryUrl,
+        githubLogin,
+        githubAvatarUrl: user.avatarUrl ?? undefined,
+        repoName,
+        defaultBranch: payload.defaultBranch?.trim() || "main",
+        installationType: "app",
+        accessToken: token.accessToken,
+        refreshToken: token.refreshToken ?? undefined,
+        tokenExpiresAt: token.expiresIn
+          ? new Date(Date.now() + token.expiresIn * 1000).toISOString()
+          : undefined,
+        username: user.login ?? undefined,
+        installationId:
+          installations.find((installation) => installation.accountLogin === githubLogin)?.id ??
+          installations[0]?.id ??
+          undefined,
+        appInstallationUrl:
+          this.githubAppService.getInstallationUrl({ owner: githubLogin }) ?? undefined,
+        appInstallations: installations,
+        visibility: "private",
+        autoCreateRepository: true,
+      },
+      { autoPublish: true },
+    );
   }
 
   @Get("/repos/:agentId/git/github/callback")
@@ -321,5 +345,41 @@ export class VersionControlController {
     @Query("state") state: string,
   ) {
     return this.completeGithubConnection(agentId, code, state);
+  }
+
+  @Get("/organizations/:organizationId/git/github/callback")
+  async completeOrganizationGithubConnection(
+    @Param("organizationId") organizationId: string,
+    @Query("code") code: string,
+    @Query("state") state: string,
+  ) {
+    const payload = this.githubAppService.verifyState(state);
+    if (
+      payload.connectionScope !== "organization" ||
+      payload.organizationId !== organizationId
+    ) {
+      throw new Error("GitHub App state does not match the target organization.");
+    }
+
+    const token = await this.githubAppService.exchangeCode(code, payload.redirectUri);
+    const user = await this.githubAppService.getAuthenticatedUser(token.accessToken);
+    const installations = await this.githubAppService.getInstallations(token.accessToken);
+    const githubLogin = user.login?.trim() || "";
+
+    return this.agentVcsService.updateOrganizationRemote(organizationId, {
+      enabled: true,
+      provider: "github",
+      githubLogin,
+      githubAvatarUrl: user.avatarUrl ?? undefined,
+      defaultBranch: payload.defaultBranch?.trim() || "main",
+      accessToken: token.accessToken,
+      username: user.login ?? undefined,
+      authType: "github_app",
+      appInstallationId:
+        installations.find((installation) => installation.accountLogin === githubLogin)?.id ??
+        installations[0]?.id ??
+        undefined,
+      appClientId: process.env.GIT_APP_CLIENT_ID?.trim() ?? undefined,
+    });
   }
 }

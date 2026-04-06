@@ -13,4 +13,9 @@ export class GitBranchDto {
   @Validators.IsOptional()
   @Validators.IsString()
   fromBranchName?: string;
+
+  @Validate({ name: "pushAfterCreate" })
+  @Validators.IsOptional()
+  @Validators.IsBoolean()
+  pushAfterCreate?: boolean;
 }
