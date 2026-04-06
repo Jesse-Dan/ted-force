@@ -1,0 +1,10 @@
+{
+  "name": "get-posts",
+  "description": "new desc",
+  "enabled": true,
+  "schema": {
+    "type": "object",
+    "required": [],
+    "properties": {}
+  }
+}

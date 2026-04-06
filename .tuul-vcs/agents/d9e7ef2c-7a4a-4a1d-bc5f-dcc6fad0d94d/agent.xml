@@ -6,6 +6,8 @@
   <description></description>
   <overview></overview>
   <tools>
-    <!-- no tools -->
+    <tool name="get-posts" enabled="true">
+      <description>new desc</description>
+    </tool>
   </tools>
 </agent>

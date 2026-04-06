@@ -8,7 +8,62 @@
     "domainLabel": null,
     "version": "1.0.0"
   },
-  "config": null,
-  "parameter": null,
-  "tools": []
+  "config": {
+    "provider": "gemini",
+    "model": "gemini-2.5-flash-lite",
+    "temperature": 0.7,
+    "maxTokens": 2048,
+    "topP": 1,
+    "topK": 50,
+    "isSystemHealthy": true,
+    "runtimeLimits": {
+      "tokenLimit": 0,
+      "tokensUsed": 0,
+      "requestsPerMinute": 40
+    },
+    "accessPolicy": {
+      "ipWhitelist": [],
+      "httpsEnabled": true,
+      "allowedOrigins": [],
+      "apiKeyRotationDays": 0
+    }
+  },
+  "parameter": {
+    "persona": [],
+    "niche": null,
+    "overview": null,
+    "documentation": null,
+    "corePrompts": [],
+    "responseFormat": {
+      "type": "json",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "base": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "voiceProfile": null,
+    "capabilityProfile": null,
+    "contextRuleSet": null
+  },
+  "tools": [
+    {
+      "name": "get-posts",
+      "description": "new desc",
+      "schema": {
+        "type": "object",
+        "required": [],
+        "properties": {}
+      },
+      "code": "const refernce = {\n    \"id\": \"usr_99x_7721\",\n    \"status\": \"active\",\n    \"identity\": {\n        \"full_name\": \"Jesse Danie\",\n        \"kyc_level\": 3,\n        \"email\": \"jessedan160@gmail.com\",\n        \"verified\": true,\n        \"address\": {\n            \"street\": \"123 Financial District\",\n            \"suite\": \"702-B\",\n            \"coordinates\": { \"lat\": 40.7128, \"lng\": -74.0060 }\n        }\n    },\n    \"accounts\": [\n        {\n            \"account_no\": \"TR-9901-2281\",\n            \"type\": \"CHECKING\",\n            \"currency\": \"USD\",\n            \"balance\": 14500.50,\n            \"interest_rate\": 0.01,\n            \"recent_transactions\": [\n                { \"id\": \"tx_001\", \"date\": \"2026-04-01\", \"desc\": \"ATM Withdrawal\", \"amount\": -200 },\n                { \"id\": \"tx_002\", \"date\": \"2026-04-02\", \"desc\": \"Payroll Deposit\", \"amount\": 4200.75 }\n            ]\n        },\n        {\n            \"account_no\": \"SA-4410-8832\",\n            \"type\": \"SAVINGS\",\n            \"currency\": \"USD\",\n            \"balance\": 102450.00,\n            \"apy\": 4.25,\n            \"locked\": false\n        }\n    ],\n    \"security\": {\n        \"mfa_enabled\": true,\n        \"last_login_ip\": \"192.168.1.45\",\n        \"login_history\": [\"2026-04-04T09:00Z\", \"2026-04-05T18:30Z\"],\n        \"device_fingerprint\": \"df_992_alpha_mac\"\n    },\n    \"metadata\": {\n        \"tags\": [\"premium_client\", \"high_net_worth\", \"beta_user\"],\n        \"created_at\": \"2024-11-12T10:00:00Z\",\n        \"notes\": null\n    }\n};\n\nawait MEMORY.add('bank_entity_0192', refernce); \n\nthrow new Error(\"Errror\");\nreturn refernce",
+      "enabled": true,
+      "executionPolicy": null,
+      "stateManagement": null,
+      "safetyPolicy": null,
+      "trigger": null
+    }
+  ]
 }
