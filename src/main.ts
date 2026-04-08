@@ -5,7 +5,7 @@ import "reflect-metadata";
 
 
 @FragmentApplication({
-  port: Number(process.env.PORT) || 4000,
+  port: 1110,
   autoScan: true,
 })
 class Application {}
