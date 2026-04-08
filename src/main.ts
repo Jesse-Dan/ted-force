@@ -3,6 +3,7 @@ import express from "express";
 import { FragmentApplication, FragmentWebApplication } from "fragment-ts";
 import "reflect-metadata";
 
+
 @FragmentApplication({
   port: Number(process.env.PORT) || 4000,
   autoScan: true,
