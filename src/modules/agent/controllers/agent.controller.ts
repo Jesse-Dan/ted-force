@@ -12,8 +12,9 @@ import {
   Response,
 } from "fragment-ts";
 import { UseAgentManagementPipeline } from "../../../common/decorators/use-agent-management-pipeline.decorator";
-import { CreateAgentDto } from "../dto/create-agent.dto";
+import { SdkManagementService } from "../../sdk/services/sdk-management.service";
 import { AgentRuntimeRequestDto } from "../dto/agent-runtime-request.dto";
+import { CreateAgentDto } from "../dto/create-agent.dto";
 import { UpdateAgentStatusDto } from "../dto/update-agent-status.dto";
 import { UpdateAgentDto } from "../dto/update-agent.dto";
 import { AgentConversationService } from "../services/agent-conversation.service";
@@ -31,6 +32,9 @@ export class AgentController {
 
   @Autowired()
   private agentConversationService!: AgentConversationService;
+
+  @Autowired()
+  private sdkManagementService!: SdkManagementService;
 
   @Get()
   async listAgents(
@@ -111,7 +115,10 @@ export class AgentController {
     @Param("agentId") agentId: string,
     @Param("conversationId") conversationId: string,
   ) {
-    return this.agentConversationService.deleteConversation(agentId, conversationId);
+    return this.agentConversationService.deleteConversation(
+      agentId,
+      conversationId,
+    );
   }
 
   @Patch("/:agentId/runtime/conversations/:conversationId")
@@ -120,7 +127,11 @@ export class AgentController {
     @Param("conversationId") conversationId: string,
     @Body() body: { title: string },
   ) {
-    return this.agentConversationService.renameConversation(agentId, conversationId, body.title);
+    return this.agentConversationService.renameConversation(
+      agentId,
+      conversationId,
+      body.title,
+    );
   }
 
   @Post("/:agentId/runtime/conversations/:conversationId/title")
@@ -128,6 +139,14 @@ export class AgentController {
     @Param("agentId") agentId: string,
     @Param("conversationId") conversationId: string,
   ) {
-    return this.agentConversationService.generateConversationTitle(agentId, conversationId);
+    return this.agentConversationService.generateConversationTitle(
+      agentId,
+      conversationId,
+    );
+  }
+
+  @Get("/:agentId/endpoints")
+  getAgentEndpoints(@Param("agentId") agentId: string) {
+    return this.sdkManagementService.getPublicEndpointCatalog(agentId);
   }
 }
