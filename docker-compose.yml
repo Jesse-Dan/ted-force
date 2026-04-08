@@ -1,0 +1,11 @@
+services:
+  digitwhale_tuul_service:
+    build: .
+
+    restart: always
+    networks:
+      - digitwhale-network
+
+networks:
+  digitwhale-network:
+    external: false

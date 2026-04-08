@@ -4,7 +4,7 @@ import { FragmentApplication, FragmentWebApplication } from "fragment-ts";
 import "reflect-metadata";
 
 @FragmentApplication({
-  port: 4000,
+  port: Number(process.env.PORT) || 4000,
   autoScan: true,
 })
 class Application {}
