@@ -19,21 +19,6 @@ export class AgentConfigRepository {
     });
   }
 
-  async findByAgentIdAndApiKey(
-    agentId: string,
-    apiKey: string,
-  ): Promise<AgentConfig | null> {
-    return this.agentConfigRepository.findOne({
-      where: {
-        agentId,
-        apiKey,
-      },
-      relations: {
-        agent: true,
-      },
-    });
-  }
-
   async save(config: Partial<AgentConfig>): Promise<AgentConfig> {
     return this.agentConfigRepository.save(config);
   }

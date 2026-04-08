@@ -1,12 +1,27 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { createOllama } from "ai-sdk-ollama";
 import type { LanguageModel } from "ai";
-import { Service } from "fragment-ts";
+import { createOllama } from "ai-sdk-ollama";
+import { Service, Value } from "fragment-ts";
 import { AgentConfig } from "../../../entities/agent-config.entity";
 import { ModelProvider } from "../../../entities/enums/model-provider.enum";
 
 @Service()
 export class LanguageModelResolverService {
+  @Value("GOOGLE_GENERATIVE_AI_API_KEY")
+  private googleGenerativeAiApiKey?: string;
+
+  @Value("GEMINI_API_KEY")
+  private geminiApiKey?: string;
+
+  @Value("OLLAMA_BASE_URL")
+  private ollamaBaseUrl?: string;
+
+  @Value("OLLAMA_HOST")
+  private ollamaHost?: string;
+
+    @Value("OLLAMA_HOST")
+  private ollamaAPIKEY?: string;
+
   resolve(agentConfig: AgentConfig): LanguageModel {
     const modelName = agentConfig.model;
 
@@ -14,8 +29,8 @@ export class LanguageModelResolverService {
       case ModelProvider.GEMINI: {
         const apiKey =
           agentConfig.systemApiKey ||
-          process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
-          process.env.GEMINI_API_KEY;
+          this.googleGenerativeAiApiKey ||
+          this.geminiApiKey;
 
         if (!apiKey) {
           throw new Error(
@@ -27,9 +42,14 @@ export class LanguageModelResolverService {
         return google(modelName);
       }
 
+      case ModelProvider.DIGITWHALE: {
+        const baseURL = "https://llm.digitwhale.com/api";
+        const ollama = createOllama(baseURL ? { baseURL,apiKey:this.ollamaAPIKEY } : {});
+        return ollama(modelName);
+      }
+
       case ModelProvider.OLLAMA: {
-        const baseURL =
-          process.env.OLLAMA_BASE_URL || process.env.OLLAMA_HOST || undefined;
+        const baseURL = this.ollamaBaseUrl || this.ollamaHost || undefined;
         const ollama = createOllama(baseURL ? { baseURL } : {});
         return ollama(modelName);
       }

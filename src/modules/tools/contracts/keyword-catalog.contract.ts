@@ -280,6 +280,12 @@ export const keywordCatalog: KeywordContract[] = [
         tags: ["audio", "speech", "tts"],
         description: "Converts text into natural-sounding spoken audio output.",
       },
+      {
+        name: "await PLATFORM.connector({ connector, arguments })",
+        tags: ["connector", "integration", "api", "runtime"],
+        description:
+          "Invokes a configured agent connector by slug or id and executes its mapped tool contract.",
+      },
     ],
   },
 ];

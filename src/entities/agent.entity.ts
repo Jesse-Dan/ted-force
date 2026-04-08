@@ -9,11 +9,13 @@ import {
 } from "typeorm";
 import { AgentConfig } from "./agent-config.entity";
 import { AgentConversation } from "./agent-conversation.entity";
+import { AgentConnector } from "./agent-connector.entity";
 import { AgentRepositoryConnection } from "./agent-repository-connection.entity";
 import { AgentAnalytics } from "./agent-analytics.entity";
 import { AgentEnvironmentVariable } from "./agent-environment-variable.entity";
 import { AgentInstance } from "./agent-instance.entity";
 import { AgentParameter } from "./agent-parameter.entity";
+import { AgentSdkApiKey } from "./agent-sdk-api-key.entity";
 import { AgentTool } from "./agent-tool.entity";
 import { Asset } from "./asset.entity";
 import { AuditableEntity } from "./base/auditable.entity";
@@ -166,6 +168,12 @@ export class Agent extends AuditableEntity {
 
   @OneToMany(() => AgentTool, (tool) => tool.agent)
   tools!: AgentTool[];
+
+  @OneToMany(() => AgentConnector, (connector) => connector.agent)
+  connectors!: AgentConnector[];
+
+  @OneToMany(() => AgentSdkApiKey, (apiKey) => apiKey.agent)
+  sdkApiKeys!: AgentSdkApiKey[];
 
   @OneToMany(() => AgentParameter, (parameter) => parameter.agent)
   parameters!: AgentParameter[];

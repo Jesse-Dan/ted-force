@@ -34,4 +34,9 @@ export class CreateAgentDto {
   @Validators.IsOptional()
   @Validators.IsIn(Object.values(AgentStatus))
   status?: AgentStatus;
+
+  @Validate({ name: "visibility" })
+  @Validators.IsOptional()
+  @Validators.IsIn(["private", "public", "internal", "domain-available"])
+  visibility?: "private" | "public" | "internal" | "domain-available";
 }

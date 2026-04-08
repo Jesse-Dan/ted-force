@@ -10,6 +10,7 @@ import { AgentConversation } from "../../../entities/agent-conversation.entity";
 import { AgentInstance } from "../../../entities/agent-instance.entity";
 import { AgentParameter } from "../../../entities/agent-parameter.entity";
 import { AgentTool } from "../../../entities/agent-tool.entity";
+import { AgentConnector } from "../../../entities/agent-connector.entity";
 import { Agent } from "../../../entities/agent.entity";
 import { ConversationMessageFile } from "../../../entities/conversation-message-file.entity";
 import { StoredFile } from "../../../entities/stored-file.entity";
@@ -30,6 +31,9 @@ export class AgentRuntimeRepository {
 
   @InjectRepository(AgentTool)
   private agentToolRepository!: Repository<AgentTool>;
+
+  @InjectRepository(AgentConnector)
+  private agentConnectorRepository!: Repository<AgentConnector>;
 
   @InjectRepository(AgentConversation)
   private conversationRepository!: Repository<AgentConversation>;
@@ -179,6 +183,38 @@ export class AgentRuntimeRepository {
     }
 
     return this.findEnabledAgentTools(input.agentId);
+  }
+
+  async findEnabledAgentConnectors(agentId: string): Promise<AgentConnector[]> {
+    const liveConnectors = await this.agentConnectorRepository.find({
+      where: {
+        agentId,
+        isLive: true,
+      },
+      relations: {
+        platformConnector: true,
+      },
+      order: {
+        createdAt: "ASC",
+      },
+    });
+
+    if (liveConnectors.length > 0) {
+      return liveConnectors;
+    }
+
+    return this.agentConnectorRepository.find({
+      where: {
+        agentId,
+        enabled: true,
+      },
+      relations: {
+        platformConnector: true,
+      },
+      order: {
+        createdAt: "ASC",
+      },
+    });
   }
 
   async findConversation(

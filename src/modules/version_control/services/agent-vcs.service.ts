@@ -8,6 +8,7 @@ import { type AgentConfig } from "../../../entities/agent-config.entity";
 import { type AgentInstance } from "../../../entities/agent-instance.entity";
 import { type AgentParameter } from "../../../entities/agent-parameter.entity";
 import { type AgentTool } from "../../../entities/agent-tool.entity";
+import { type AgentConnector } from "../../../entities/agent-connector.entity";
 import { type Asset } from "../../../entities/asset.entity";
 import { type DataSourceConnection } from "../../../entities/data-source-connection.entity";
 import { type ExternalResource } from "../../../entities/external-resource.entity";
@@ -21,6 +22,8 @@ import { OrganizationRepository } from "../../organization/repositories/organiza
 import { OrganizationRepositoryConnectionRepository } from "../../organization/repositories/organization-repository-connection.repository";
 import { AssetRepository } from "../../assets_and_resources/repositories/asset.repository";
 import { ExternalResourceRepository } from "../../assets_and_resources/repositories/external-resource.repository";
+import { AgentConnectorRepository } from "../../connectors/repositories/agent-connector.repository";
+import { PlatformConnectorRepository } from "../../connectors/repositories/platform-connector.repository";
 import { DataSourceRepository } from "../../data_source/repositories/data-source.repository";
 import { AgentInstanceRepository } from "../repositories/agent-instance.repository";
 import { AgentParameterVersionRepository } from "../repositories/agent-parameter-version.repository";
@@ -48,7 +51,7 @@ type SnapshotShape = {
     topK: number;
     isSystemHealthy: boolean;
     runtimeLimits?: AgentConfig["runtimeLimits"] | null;
-    accessPolicy?: AgentConfig["accessPolicy"] | null;
+    sdkSecurity?: AgentConfig["sdkSecurity"] | null;
   } | null;
   parameter: {
     persona?: string[];
@@ -71,6 +74,33 @@ type SnapshotShape = {
     stateManagement?: any;
     safetyPolicy?: any;
     trigger?: any;
+  }>;
+  connectors: Array<{
+    name: string;
+    slug: string;
+    description?: string | null;
+    source: string;
+    isLive?: boolean;
+    isPublic?: boolean;
+    authConfig?: Record<string, unknown> | null;
+    operations?: Array<Record<string, unknown>>;
+    dependencyGraph?: Record<string, unknown> | null;
+    envConfig?: Record<string, unknown> | null;
+    envRefs?: Array<Record<string, unknown>>;
+    logoUrl?: string | null;
+
+    // Legacy connector fields kept to support historical snapshots.
+    httpMethod: string;
+    toolName: string;
+    toolId?: string | null;
+    argumentMode: string;
+    argumentMappings?: Record<string, string> | null;
+    defaultArgs?: Record<string, unknown> | null;
+    requestSchema?: Record<string, unknown> | null;
+    isExposed: boolean;
+    enabled: boolean;
+    platformConnectorId?: string | null;
+    platformConnectorKey?: string | null;
   }>;
   assets: Array<{
     name: string;
@@ -181,6 +211,12 @@ export class AgentVcsService {
 
   @Autowired()
   private dataSourceRepository!: DataSourceRepository;
+
+  @Autowired()
+  private agentConnectorRepository!: AgentConnectorRepository;
+
+  @Autowired()
+  private platformConnectorRepository!: PlatformConnectorRepository;
 
   async bootstrapAgentRepository(
     agentId: string,
@@ -938,7 +974,33 @@ export class AgentVcsService {
 
       // Guard: if the remote branch is ahead, pushing would be rejected (non-fast-forward).
       // We expect users to Fetch/Pull (or resolve via PR) before retrying push.
-      await git.fetch("origin", branchName).catch(() => null);
+      const preflightFetchError = await git
+        .fetch("origin", branchName)
+        .then(() => null)
+        .catch((error) =>
+          this.readErrorMessage(
+            error,
+            "Git fetch failed. Check your remote connection and try again.",
+          ),
+        );
+      if (preflightFetchError) {
+        const disconnected = await this.disconnectRemoteOnAuthFailure(
+          agentId,
+          agent,
+          preflightFetchError,
+        );
+        return {
+          pushed: false,
+          pendingCommits: pending.length,
+          pushedCommits: 0,
+          branch: branchName,
+          remoteUrl: repository.repositoryUrl ?? null,
+          message: disconnected
+            ? "Git authentication failed. GitHub account was disconnected. Reconnect and retry."
+            : preflightFetchError,
+          requiresReconnect: disconnected,
+        };
+      }
       const aheadBehind = await this.getAheadBehindCounts(git, branchName);
       if (aheadBehind.remoteAheadBy > 0) {
         const message = `Remote branch has ${aheadBehind.remoteAheadBy} new commit${aheadBehind.remoteAheadBy === 1 ? "" : "s"}. Pull before pushing.`;
@@ -1011,9 +1073,23 @@ export class AgentVcsService {
         pushed = true;
       } catch (error: any) {
         pushed = false;
-        pushMessage =
-          error?.message?.trim?.() ||
-          `Failed to push branch ${branchName} to remote repository.`;
+        pushMessage = this.readErrorMessage(
+          error,
+          `Failed to push branch ${branchName} to remote repository.`,
+        );
+      }
+
+      let disconnected = false;
+      if (!pushed) {
+        disconnected = await this.disconnectRemoteOnAuthFailure(
+          agentId,
+          agent,
+          pushMessage,
+        );
+        if (disconnected) {
+          pushMessage =
+            "Git authentication failed. GitHub account was disconnected. Reconnect and retry.";
+        }
       }
 
       const now = new Date().toISOString();
@@ -1054,6 +1130,7 @@ export class AgentVcsService {
         branch: branchName,
         remoteUrl: repository.repositoryUrl ?? null,
         message: pushMessage,
+        requiresReconnect: disconnected,
       };
     });
   }
@@ -1083,7 +1160,35 @@ export class AgentVcsService {
       try {
         // Server-side pulls must never merge/rebase.
         // We only allow fast-forwarding the working repo to the remote branch.
-        await git.fetch("origin", branchName).catch(() => null);
+        const preflightFetchError = await git
+          .fetch("origin", branchName)
+          .then(() => null)
+          .catch((error) =>
+            this.readErrorMessage(
+              error,
+              "Git fetch failed. Check your remote connection and try again.",
+            ),
+          );
+        if (preflightFetchError) {
+          const disconnected = await this.disconnectRemoteOnAuthFailure(
+            agentId,
+            agent,
+            preflightFetchError,
+          );
+          return {
+            pulled: false,
+            branch: branchName,
+            conflict: false,
+            diverged: false,
+            reason: disconnected
+              ? "Git authentication failed. GitHub account was disconnected. Reconnect and retry."
+              : preflightFetchError,
+            requiresReconnect: disconnected,
+            details: {
+              message: preflightFetchError,
+            },
+          };
+        }
 
         const counts = await this.getAheadBehindCounts(git, branchName);
         if (counts.localAheadBy > 0 && counts.remoteAheadBy > 0) {
@@ -1106,13 +1211,34 @@ export class AgentVcsService {
           await git.raw(["merge", "--ff-only", `origin/${branchName}`]);
         }
       } catch (error: any) {
-        const message =
-          error?.message?.trim?.() ||
-          "Git pull failed. Please resolve the conflict in your Git provider and try again.";
+        const message = this.readErrorMessage(
+          error,
+          "Git pull failed. Please resolve the conflict in your Git provider and try again.",
+        );
 
         // We should not leave the server-side repo in a conflicted merge state,
         // since users resolve conflicts on their machine (out of scope for Tuul UI).
         await git.raw(["merge", "--abort"]).catch(() => null);
+
+        const disconnected = await this.disconnectRemoteOnAuthFailure(
+          agentId,
+          agent,
+          message,
+        );
+        if (disconnected) {
+          return {
+            pulled: false,
+            branch: branchName,
+            conflict: false,
+            diverged: false,
+            reason:
+              "Git authentication failed. GitHub account was disconnected. Reconnect and retry.",
+            requiresReconnect: true,
+            details: {
+              message,
+            },
+          };
+        }
 
         const looksLikeConflict =
           /CONFLICT|merge conflict|Automatic merge failed|unmerged/i.test(
@@ -1597,13 +1723,23 @@ export class AgentVcsService {
       try {
         await git.fetch("origin", branchName);
       } catch (error: any) {
+        const message = this.readErrorMessage(
+          error,
+          "Git fetch failed. Check your remote connection and try again.",
+        );
+        const disconnected = await this.disconnectRemoteOnAuthFailure(
+          agentId,
+          agent,
+          message,
+        );
         return {
           fetched: false,
           remoteConfigured: true,
           branch: branchName,
-          reason:
-            error?.message?.trim?.() ||
-            "Git fetch failed. Check your remote connection and try again.",
+          reason: disconnected
+            ? "Git authentication failed. GitHub account was disconnected. Reconnect and retry."
+            : message,
+          requiresReconnect: disconnected,
         };
       }
 
@@ -1777,6 +1913,85 @@ export class AgentVcsService {
       effectiveRemote: effective,
       organizationRemote,
       defaultBranch: this.getDefaultBranchName(agent),
+    };
+  }
+
+  async disconnectAgentRemote(
+    agentId: string,
+    payload?: { reason?: string | null },
+  ) {
+    const agent = await this.getAgentOrThrow(agentId);
+    const existingConnection =
+      await this.agentRepositoryConnectionRepository.findByAgentId(agentId);
+
+    if (existingConnection) {
+      await this.agentRepositoryConnectionRepository.save({
+        ...existingConnection,
+        isEnabled: false,
+        githubLogin: null,
+        githubAvatarUrl: null,
+        repositoryUrl: null,
+        repoName: null,
+        installationType: null,
+        accessToken: null,
+        refreshToken: null,
+        tokenExpiresAt: null,
+        username: null,
+        appInstallationId: null,
+        appInstallationUrl: null,
+        appInstallations: null,
+      });
+    }
+
+    await this.updateRepositoryMetadata(agent, {
+      mode: "internal",
+      repositoryUrl: null,
+      githubLogin: null,
+      githubAvatarUrl: null,
+      owner: null,
+      repoName: null,
+      slug: null,
+      installationType: "none",
+      accessToken: null,
+      refreshToken: null,
+      tokenExpiresAt: null,
+      username: null,
+      installationId: null,
+      appInstallationUrl: null,
+      appInstallations: null,
+      isConnected: false,
+      remoteEnabled: false,
+      inheritsOrganizationRemote: false,
+      remoteSource: "none",
+      connectedAt: null,
+      initializedAt: null,
+      lastPushAt: null,
+      lastPullAt: null,
+      lastPullRequestUrl: null,
+      webUrl: null,
+      cloneUrlHttps: null,
+      cloneUrlSsh: null,
+      branchUrl: null,
+      compareUrlTemplate: null,
+      lastPushStatus: "failed",
+      lastPushMessage:
+        payload?.reason?.trim() ||
+        "Git connection removed. Reconnect GitHub to continue.",
+      health: {
+        isValidUrl: false,
+        ownerResolved: false,
+        repoResolved: false,
+        providerSupported: true,
+        readyForAutomaticPush: false,
+      },
+    });
+
+    return {
+      disconnected: true,
+      reason:
+        payload?.reason?.trim() ||
+        "Git connection removed. Reconnect GitHub to continue.",
+      remote: await this.getAgentRemote(agentId),
     };
   }
 
@@ -2688,6 +2903,7 @@ export class AgentVcsService {
       await this.agentParameterVersionRepository.findLiveByAgentId(agentId);
     const tools =
       await this.agentToolVersionRepository.findLiveByAgentId(agentId);
+    const connectors = await this.agentConnectorRepository.listByAgentId(agentId);
     const assets = await this.assetRepository.findByAgentId(agentId);
     const sources = await this.externalResourceRepository.findByAgentId(agentId);
     const datasources = await this.dataSourceRepository.findByAgentId(agentId);
@@ -2713,11 +2929,12 @@ export class AgentVcsService {
             topK: config.topK,
             isSystemHealthy: config.isSystemHealthy,
             runtimeLimits: config.runtimeLimits ?? null,
-            accessPolicy: config.accessPolicy ?? null,
+            sdkSecurity: config.sdkSecurity ?? null,
           }
         : null,
       parameter: this.serializeParameter(parameter),
       tools: tools.map((tool) => this.serializeTool(tool)),
+      connectors: connectors.map((connector) => this.serializeConnector(connector)),
       assets: assets.map((asset) => this.serializeAsset(asset)),
       sources: sources.map((source) => this.serializeSource(source)),
       datasources: datasources.map((datasource) =>
@@ -2757,8 +2974,7 @@ export class AgentVcsService {
         topK: snapshot.config.topK,
         isSystemHealthy: snapshot.config.isSystemHealthy,
         runtimeLimits: snapshot.config.runtimeLimits ?? null,
-        accessPolicy: snapshot.config.accessPolicy ?? null,
-        apiKey: existingConfig?.apiKey ?? null,
+        sdkSecurity: snapshot.config.sdkSecurity ?? null,
         systemApiKey: existingConfig?.systemApiKey ?? null,
       });
     }
@@ -2782,8 +2998,9 @@ export class AgentVcsService {
     }
 
     await this.agentToolVersionRepository.deleteLiveByAgentId(agent.id);
+    const restoredToolIdByName = new Map<string, string>();
     if (snapshot.tools.length > 0) {
-      await this.agentToolVersionRepository.saveMany(
+      const restoredTools = await this.agentToolVersionRepository.saveMany(
         snapshot.tools.map((tool) => ({
           agentId: agent.id,
           instanceId: null,
@@ -2799,6 +3016,98 @@ export class AgentVcsService {
           trigger: tool.trigger ?? null,
         })),
       );
+      for (const tool of restoredTools) {
+        const normalizedName = String(tool.name ?? "").trim().toLowerCase();
+        if (normalizedName) {
+          restoredToolIdByName.set(normalizedName, tool.id);
+        }
+      }
+    }
+
+    await this.agentConnectorRepository.deleteByAgentId(agent.id);
+    if (snapshot.connectors.length > 0) {
+      const connectorPayloads = await Promise.all(
+        snapshot.connectors.map(async (connector) => {
+          const requestedSource = String(connector.source ?? "manual")
+            .trim()
+            .toLowerCase();
+          let resolvedPlatformConnectorId: string | null = null;
+
+          if (requestedSource === "platform") {
+            const platformId = String(connector.platformConnectorId ?? "").trim();
+            const platformKey = String(connector.platformConnectorKey ?? "").trim();
+
+            if (platformId) {
+              const existingPlatformConnector =
+                await this.platformConnectorRepository.findById(platformId);
+              resolvedPlatformConnectorId = existingPlatformConnector?.id ?? null;
+            }
+
+            if (!resolvedPlatformConnectorId && platformKey) {
+              const existingPlatformConnector =
+                await this.platformConnectorRepository.findByKey(platformKey);
+              resolvedPlatformConnectorId = existingPlatformConnector?.id ?? null;
+            }
+          }
+
+          const normalizedToolName = String(connector.toolName ?? "")
+            .trim()
+            .toLowerCase();
+          const remappedToolId =
+            restoredToolIdByName.get(normalizedToolName) ?? null;
+          const resolvedSource =
+            requestedSource === "platform" && !resolvedPlatformConnectorId
+              ? "manual"
+              : requestedSource;
+
+          return {
+            agentId: agent.id,
+            name: connector.name,
+            slug: connector.slug,
+            description: connector.description ?? null,
+            source: resolvedSource as AgentConnector["source"],
+            isLive:
+              connector.isLive === undefined
+                ? Boolean(connector.enabled)
+                : Boolean(connector.isLive),
+            isPublic:
+              connector.isPublic === undefined
+                ? Boolean(connector.isExposed)
+                : Boolean(connector.isPublic),
+            authConfig:
+              (connector.authConfig as AgentConnector["authConfig"]) ?? null,
+            operations:
+              (connector.operations as AgentConnector["operations"]) ?? null,
+            dependencyGraph:
+              (connector.dependencyGraph as AgentConnector["dependencyGraph"]) ??
+              null,
+            envConfig:
+              (connector.envConfig as AgentConnector["envConfig"]) ?? null,
+            envRefs: (connector.envRefs as AgentConnector["envRefs"]) ?? null,
+            logoUrl:
+              typeof connector.logoUrl === "string" ? connector.logoUrl : null,
+
+            httpMethod: connector.httpMethod as AgentConnector["httpMethod"],
+            toolName: connector.toolName,
+            toolId: remappedToolId,
+            argumentMode: connector.argumentMode as AgentConnector["argumentMode"],
+            argumentMappings: connector.argumentMappings ?? null,
+            defaultArgs: connector.defaultArgs ?? null,
+            requestSchema: connector.requestSchema ?? null,
+            isExposed:
+              connector.isExposed === undefined
+                ? Boolean(connector.isPublic)
+                : Boolean(connector.isExposed),
+            enabled:
+              connector.enabled === undefined
+                ? Boolean(connector.isLive)
+                : Boolean(connector.enabled),
+            platformConnectorId: resolvedPlatformConnectorId,
+          };
+        }),
+      );
+
+      await this.agentConnectorRepository.saveMany(connectorPayloads);
     }
 
     await this.assetRepository.deleteByAgentId(agent.id);
@@ -2895,6 +3204,35 @@ export class AgentVcsService {
       stateManagement: tool.stateManagement ?? null,
       safetyPolicy: tool.safetyPolicy ?? null,
       trigger: tool.trigger ?? null,
+    };
+  }
+
+  private serializeConnector(connector: AgentConnector) {
+    return {
+      name: connector.name,
+      slug: connector.slug,
+      description: connector.description ?? null,
+      source: connector.source,
+      isLive: Boolean(connector.isLive ?? connector.enabled),
+      isPublic: Boolean(connector.isPublic ?? connector.isExposed),
+      authConfig: connector.authConfig ?? null,
+      operations: connector.operations ?? [],
+      dependencyGraph: connector.dependencyGraph ?? null,
+      envConfig: connector.envConfig ?? null,
+      envRefs: connector.envRefs ?? [],
+      logoUrl: connector.logoUrl ?? null,
+
+      httpMethod: connector.httpMethod,
+      toolName: connector.toolName,
+      toolId: connector.toolId ?? null,
+      argumentMode: connector.argumentMode,
+      argumentMappings: connector.argumentMappings ?? null,
+      defaultArgs: connector.defaultArgs ?? null,
+      requestSchema: connector.requestSchema ?? null,
+      isExposed: connector.isExposed,
+      enabled: connector.enabled,
+      platformConnectorId: connector.platformConnectorId ?? null,
+      platformConnectorKey: connector.platformConnector?.key ?? null,
     };
   }
 
@@ -3015,6 +3353,10 @@ export class AgentVcsService {
         content: "",
       },
       {
+        path: "connectors/.gitkeep",
+        content: "",
+      },
+      {
         path: "sources/.gitkeep",
         content: "",
       },
@@ -3059,6 +3401,18 @@ export class AgentVcsService {
 
     if (snapshot.tools.length > 0) {
       this.removeGitkeep(managedFiles, "tools/.gitkeep");
+    }
+
+    for (const connector of snapshot.connectors) {
+      const safeName = this.slugify(connector.slug || connector.name || "connector");
+      managedFiles.push({
+        path: `connectors/${safeName}.json`,
+        content: JSON.stringify(connector, null, 2) + "\n",
+      });
+    }
+
+    if (snapshot.connectors.length > 0) {
+      this.removeGitkeep(managedFiles, "connectors/.gitkeep");
     }
 
     for (const source of snapshot.sources) {
@@ -3126,6 +3480,7 @@ export class AgentVcsService {
   private serializeRepoSnapshot(snapshot: SnapshotShape) {
     const {
       tools: _tools,
+      connectors: _connectors,
       assets: _assets,
       sources: _sources,
       datasources: _datasources,
@@ -3362,6 +3717,10 @@ export class AgentVcsService {
       const raw = await readFile(join(repoPath, "agent.json"), "utf8");
       const snapshot = JSON.parse(raw) as Partial<SnapshotShape>;
       const repoTools = await this.readToolsFromRepo(repoPath);
+      const repoConnectors = await this.readJsonCollectionFromRepo(
+        repoPath,
+        "connectors",
+      );
       const repoSources = await this.readJsonCollectionFromRepo(repoPath, "sources");
       const repoAssets = await this.readJsonCollectionFromRepo(repoPath, "assets");
       const repoDatasources = await this.readJsonCollectionFromRepo(
@@ -3384,6 +3743,7 @@ export class AgentVcsService {
                 repoTools,
                 changedPaths,
               ),
+        connectors: repoConnectors as SnapshotShape["connectors"],
         sources: repoSources as SnapshotShape["sources"],
         assets: repoAssets as SnapshotShape["assets"],
         datasources: repoDatasources as SnapshotShape["datasources"],
@@ -3672,6 +4032,7 @@ export class AgentVcsService {
       config: (snapshot?.config ?? null) as SnapshotShape["config"],
       parameter: (snapshot?.parameter ?? null) as SnapshotShape["parameter"],
       tools: snapshot?.tools ?? [],
+      connectors: snapshot?.connectors ?? [],
       assets: snapshot?.assets ?? [],
       sources: snapshot?.sources ?? [],
       datasources: snapshot?.datasources ?? [],
@@ -3959,6 +4320,57 @@ export class AgentVcsService {
       ...(agent.metadata ?? {}),
       repository: nextRepository,
     });
+  }
+
+  private readErrorMessage(error: unknown, fallback: string) {
+    if (!error) return fallback;
+    if (error instanceof Error && error.message.trim()) {
+      return error.message.trim();
+    }
+    const candidate = (error as any)?.message;
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+    return fallback;
+  }
+
+  private isAuthFailureError(message: string) {
+    const normalized = message.toLowerCase();
+    return (
+      normalized.includes("authentication failed") ||
+      normalized.includes("invalid username or token") ||
+      normalized.includes("password authentication is not supported") ||
+      normalized.includes("could not read username") ||
+      normalized.includes("http basic: access denied") ||
+      normalized.includes("bad credentials")
+    );
+  }
+
+  private async disconnectRemoteOnAuthFailure(
+    agentId: string,
+    agent: Agent,
+    message: string,
+  ) {
+    if (!this.isAuthFailureError(message)) {
+      return false;
+    }
+
+    await this.disconnectAgentRemote(agentId, {
+      reason:
+        "Git authentication failed for this repository. Your GitHub connection was removed. Reconnect GitHub and try again.",
+    });
+
+    // Keep in-memory copy aligned if this call path continues using `agent`.
+    if (agent.metadata?.repository) {
+      agent.metadata.repository.isConnected = false;
+      agent.metadata.repository.remoteEnabled = false;
+      agent.metadata.repository.accessToken = null;
+      agent.metadata.repository.refreshToken = null;
+      agent.metadata.repository.repositoryUrl = null;
+      agent.metadata.repository.githubLogin = null;
+      agent.metadata.repository.repoName = null;
+    }
+    return true;
   }
 
   private getRepoPath(agentId: string) {

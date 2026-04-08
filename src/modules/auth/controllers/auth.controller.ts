@@ -9,6 +9,11 @@ export class AuthController {
   @Autowired()
   private authService!: AuthService;
 
+  @Get("/users")
+  async listUsers() {
+    return this.authService.listUsers();
+  }
+
   @Get("/users/:userId")
   async getUser(@Param("userId") userId: string) {
     return this.authService.getUserById(userId);

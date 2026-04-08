@@ -9,6 +9,8 @@ import { ToolMemoryService } from "../../tools/services/tool-memory.service";
 import { AgentToolRepository } from "../../tools/repositories/agent-tool.repository";
 import { AgentAwarenessService } from "./agent-awareness.service";
 import { AgentRuntimeRepository } from "../repositories/agent-runtime.repository";
+import { ConnectorRuntimeService } from "../../connectors/services/connector-runtime.service";
+import { ConnectorHttpMethod } from "../../../entities/enums/connector-http-method.enum";
 
 export interface AgentToolExecutionContext {
   agentId: string;
@@ -93,6 +95,9 @@ export class AgentToolExecutionService {
 
   @Autowired()
   private runtimeRepository!: AgentRuntimeRepository;
+
+  @Autowired()
+  private connectorRuntimeService!: ConnectorRuntimeService;
 
   async execute(
     agentTool: AgentTool,
@@ -307,6 +312,28 @@ export class AgentToolExecutionService {
           callPlatform("speech_to_text", this.normalizeObjectInput(input)),
         text_to_speech: async (input: unknown) =>
           callPlatform("text_to_speech", this.normalizeObjectInput(input, "text")),
+        connector: async (input: unknown) => {
+          const normalizedCall = this.normalizeConnectorCall(input);
+          const nestedOutput = await this.executeConnectorByReference(
+            normalizedCall.connectorReference,
+            normalizedCall.arguments,
+            context,
+            {
+              currentTool: agentTool,
+              method: normalizedCall.method,
+              operationId: normalizedCall.operationId,
+            },
+          );
+
+          logs.push(
+            ...nestedOutput.logs.map((entry) => ({
+              ...entry,
+              message: `[PLATFORM.connector] ${entry.message}`,
+            })),
+          );
+
+          return nestedOutput.result;
+        },
       },
       LOG: {
         log: async (message: string, data?: unknown) =>
@@ -444,6 +471,72 @@ export class AgentToolExecutionService {
     }
   }
 
+  async executeConnectorByReference(
+    connectorReference: string,
+    args: Record<string, unknown>,
+    context: AgentToolExecutionContext,
+    options?: {
+      currentTool?: AgentTool | null;
+      method?: ConnectorHttpMethod;
+      allowDisabled?: boolean;
+      operationId?: string;
+    },
+  ): Promise<AgentToolExecutionOutput> {
+    const operationId = options?.operationId ?? this.readConnectorOperationId(args);
+    const cleanedArgs = this.stripConnectorEnvelope(args);
+    const nested = await this.connectorRuntimeService.executeOperationByReference({
+      agentId: context.agentId,
+      connectorReference,
+      operationId,
+      parameters: cleanedArgs,
+      sessionId: context.sessionId,
+      requireLive: options?.allowDisabled ? false : true,
+    });
+
+    if (options?.method && nested.operation.method !== options.method) {
+      throw new ToolExecutionWrappedError(
+        `Connector method mismatch: expected ${options.method}, resolved ${nested.operation.method}.`,
+        {
+          kind: "validation",
+          userMessage:
+            `Connector method mismatch. Expected ${options.method} but resolved ${nested.operation.method}.`,
+          operation: "PLATFORM.connector",
+        },
+      );
+    }
+
+    return {
+      logs: [
+        {
+          type: "info",
+          message: `Connector "${nested.connector.name}" executed.`,
+          data: {
+            connectorId: nested.connector.id,
+            connectorSlug: nested.connector.slug,
+            sourceType: nested.connector.source,
+            operationId: nested.operation.id,
+          },
+        },
+      ],
+      result: {
+        connector: {
+          id: nested.connector.id,
+          name: nested.connector.name,
+          slug: nested.connector.slug,
+          source: nested.connector.source,
+        },
+        operation: {
+          id: nested.operation.id,
+          name: nested.operation.name,
+          method: nested.operation.method,
+        },
+        args: cleanedArgs,
+        response: nested.response,
+        observability: nested.observability,
+      },
+    };
+  }
+
   private normalizeObjectInput(
     input: unknown,
     fallbackKey?: string,
@@ -542,6 +635,192 @@ export class AgentToolExecutionService {
           ? (rawArgs as Record<string, unknown>)
           : {},
     };
+  }
+
+  private normalizeConnectorCall(call: unknown): {
+    connectorReference: string;
+    arguments: Record<string, unknown>;
+    operationId?: string;
+    method?: ConnectorHttpMethod;
+  } {
+    if (typeof call === "string" && call.trim()) {
+      return {
+        connectorReference: call.trim(),
+        arguments: {},
+      };
+    }
+
+    if (!call || typeof call !== "object" || Array.isArray(call)) {
+      throw new ToolExecutionWrappedError(
+        "PLATFORM.connector requires an object payload.",
+        {
+          kind: "validation",
+          userMessage:
+            "PLATFORM.connector expects an object like { connector: 'slug', arguments: {} }.",
+          operation: "PLATFORM.connector",
+        },
+      );
+    }
+
+    const payload = call as Record<string, unknown>;
+    const connectorReference = String(
+      payload.connector ??
+        payload.connectorId ??
+        payload.connectorSlug ??
+        payload.name ??
+        payload.id ??
+        payload.slug ??
+        "",
+    ).trim();
+
+    if (!connectorReference) {
+      throw new ToolExecutionWrappedError(
+        "PLATFORM.connector requires a connector reference.",
+        {
+          kind: "validation",
+          userMessage:
+            "Provide a connector reference in connector/connectorId/connectorSlug/name.",
+          operation: "PLATFORM.connector",
+        },
+      );
+    }
+
+    const rawMethod = payload.method;
+    const parsedMethod =
+      typeof rawMethod === "string" ? this.parseConnectorMethod(rawMethod) : undefined;
+    const rawOperationId =
+      payload.operation_id ??
+      payload.operationId ??
+      payload.operation ??
+      payload.endpoint ??
+      payload.endpointId;
+    const operationId =
+      typeof rawOperationId === "string" && rawOperationId.trim()
+        ? rawOperationId.trim()
+        : undefined;
+
+    const argCandidates = [payload.arguments, payload.args, payload.payload, payload.input];
+    let args =
+      argCandidates.find((entry) => this.isObject(entry)) as
+        | Record<string, unknown>
+        | undefined;
+
+    const hasEnvelope =
+      this.isObject(payload.body) ||
+      this.isObject(payload.query) ||
+      this.isObject(payload.params) ||
+      this.isObject(payload.path);
+
+    if (!args && hasEnvelope) {
+      args = {
+        body: this.isObject(payload.body) ? payload.body : {},
+        query: this.isObject(payload.query) ? payload.query : {},
+        params: this.isObject(payload.params)
+          ? payload.params
+          : this.isObject(payload.path)
+            ? payload.path
+            : {},
+      };
+    }
+
+    if (!args) {
+      args = Object.entries(payload).reduce<Record<string, unknown>>(
+        (accumulator, [key, value]) => {
+          if (
+            [
+              "connector",
+              "connectorId",
+              "connectorSlug",
+              "name",
+              "id",
+              "slug",
+              "method",
+              "arguments",
+              "args",
+              "payload",
+              "input",
+              "body",
+              "query",
+              "params",
+              "path",
+            ].includes(key)
+          ) {
+            return accumulator;
+          }
+          accumulator[key] = value;
+          return accumulator;
+        },
+        {},
+      );
+    }
+
+    return {
+      connectorReference,
+      arguments: args,
+      operationId,
+      method: parsedMethod,
+    };
+  }
+
+  private parseConnectorMethod(input: string): ConnectorHttpMethod {
+    const normalized = input.trim().toUpperCase();
+    if (Object.values(ConnectorHttpMethod).includes(normalized as ConnectorHttpMethod)) {
+      return normalized as ConnectorHttpMethod;
+    }
+
+    throw new ToolExecutionWrappedError(
+      `Unsupported connector method "${input}".`,
+      {
+        kind: "validation",
+        userMessage:
+          `Invalid connector method "${input}". Use GET, POST, PUT, PATCH, or DELETE.`,
+        operation: "PLATFORM.connector",
+      },
+    );
+  }
+
+  private readConnectorOperationId(args: Record<string, unknown>): string | undefined {
+    const raw =
+      args.operation_id ??
+      args.operationId ??
+      args.operation ??
+      args.endpoint ??
+      args.endpointId;
+    if (typeof raw === "string" && raw.trim()) {
+      return raw.trim();
+    }
+    return undefined;
+  }
+
+  private stripConnectorEnvelope(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const nestedKey = ["parameters", "args", "payload", "input"].find((key) =>
+      this.isObject(args[key]),
+    );
+    if (nestedKey) {
+      return args[nestedKey] as Record<string, unknown>;
+    }
+
+    return Object.entries(args).reduce<Record<string, unknown>>(
+      (accumulator, [key, value]) => {
+        if (
+          [
+            "operation",
+            "operation_id",
+            "operationId",
+            "endpoint",
+            "endpointId",
+            "method",
+          ].includes(key)
+        ) {
+          return accumulator;
+        }
+        accumulator[key] = value;
+        return accumulator;
+      },
+      {},
+    );
   }
 
   private matchesToolName(toolName: string, requestedName: string): boolean {

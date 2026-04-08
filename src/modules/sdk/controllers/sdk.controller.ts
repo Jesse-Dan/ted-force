@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Delete,
+  FragmentMiddleware,
   Get,
   Param,
   Patch,
@@ -11,11 +12,13 @@ import {
   Res,
 } from "fragment-ts";
 import { UseAgentRequestPipeline } from "../../../common/decorators/use-agent-request-pipeline.decorator";
+import { SdkRateLimitMiddleware } from "../../../common/middlewares/sdk-rate-limit.middleware";
 import { SdkPromptDto } from "../dto/sdk-prompt.dto";
 import { UpdateConversationTitleDto } from "../dto/update-conversation-title.dto";
 import { SdkService } from "../services/sdk.service";
 
 @UseAgentRequestPipeline()
+@FragmentMiddleware(SdkRateLimitMiddleware, { order: -80 })
 @Controller("/sdk")
 export class SdkController {
   @Autowired()

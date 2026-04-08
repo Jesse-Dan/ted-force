@@ -68,4 +68,9 @@ export class CreateOrganizationDto {
   @Validators.IsOptional()
   @Validators.IsIn(Object.values(OrganizationPlan))
   plan?: OrganizationPlan;
+
+  @Validate({ name: "buildType" })
+  @Validators.IsOptional()
+  @Validators.IsIn(["none", "digitwhale"])
+  buildType?: "none" | "digitwhale";
 }

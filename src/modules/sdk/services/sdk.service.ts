@@ -22,7 +22,7 @@ export class SdkService {
   private agentClientAccessService!: AgentClientAccessService;
 
   async prompt(agentId: string, payload: SdkPromptDto, response: Response) {
-    await this.agentClientAccessService.assertAgentAccess(agentId);
+    await this.agentClientAccessService.assertAgentAccess(agentId, "write");
 
     if (payload.stream === false) {
       return this.agentRuntimeService.respond(agentId, payload);
@@ -33,12 +33,12 @@ export class SdkService {
   }
 
   async getConversations(agentId: string, sessionId: string) {
-    await this.agentClientAccessService.assertAgentAccess(agentId);
+    await this.agentClientAccessService.assertAgentAccess(agentId, "read");
     return this.sdkRepository.findConversationsByAgentIdAndSessionId(agentId, sessionId);
   }
 
   async deleteConversation(agentId: string, conversationId: string) {
-    await this.agentClientAccessService.assertAgentAccess(agentId);
+    await this.agentClientAccessService.assertAgentAccess(agentId, "write");
 
     const conversation = await this.sdkRepository.findConversationByAgentIdAndId(
       agentId,
@@ -53,7 +53,7 @@ export class SdkService {
   }
 
   async renameConversation(agentId: string, conversationId: string, title: string) {
-    await this.agentClientAccessService.assertAgentAccess(agentId);
+    await this.agentClientAccessService.assertAgentAccess(agentId, "write");
     const conversation = await this.sdkRepository.findConversationByAgentIdAndId(
       agentId,
       conversationId,
@@ -75,7 +75,7 @@ export class SdkService {
   }
 
   async generateConversationTitle(agentId: string, conversationId: string) {
-    await this.agentClientAccessService.assertAgentAccess(agentId);
+    await this.agentClientAccessService.assertAgentAccess(agentId, "write");
     const conversation = await this.sdkRepository.findConversationByAgentIdAndId(
       agentId,
       conversationId,
@@ -135,7 +135,7 @@ export class SdkService {
   }
 
   async getMessages(agentId: string, conversationId: string) {
-    await this.agentClientAccessService.assertAgentAccess(agentId);
+    await this.agentClientAccessService.assertAgentAccess(agentId, "read");
     return this.sdkRepository.findMessagesByAgentIdAndConversationId(
       agentId,
       conversationId,
@@ -143,12 +143,12 @@ export class SdkService {
   }
 
   async getMessagesByRun(agentId: string, runId: string) {
-    await this.agentClientAccessService.assertAgentAccess(agentId);
+    await this.agentClientAccessService.assertAgentAccess(agentId, "read");
     return this.sdkRepository.findMessagesByAgentIdAndRunId(agentId, runId);
   }
 
   async getResources(agentId: string, sessionId: string) {
-    await this.agentClientAccessService.assertAgentAccess(agentId);
+    await this.agentClientAccessService.assertAgentAccess(agentId, "read");
     return this.sdkRepository.findResourcesByAgentIdAndSessionId(agentId, sessionId);
   }
 

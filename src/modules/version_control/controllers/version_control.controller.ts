@@ -1,4 +1,4 @@
-import { Autowired, Body, Controller, Get, Param, Post, Put, Query } from "fragment-ts";
+import { Autowired, Body, Controller, Delete, Get, Param, Post, Put, Query } from "fragment-ts";
 import { ConnectGitRepositoryDto } from "../dto/connect-git-repository.dto";
 import { UseAgentManagementPipeline } from "../../../common/decorators/use-agent-management-pipeline.decorator";
 import { CommitInstanceSnapshotDto } from "../dto/commit-instance-snapshot.dto";
@@ -230,6 +230,16 @@ export class VersionControlController {
     @Body() body: ConnectGitRepositoryDto,
   ) {
     return this.versionControlCommandService.connectGitRepository(agentId, body);
+  }
+
+  @Delete("/agents/:agentId/git")
+  async disconnectGitRepository(@Param("agentId") agentId: string) {
+    return this.agentVcsService.disconnectAgentRemote(agentId);
+  }
+
+  @Delete("/repos/:agentId/git")
+  async disconnectRepoGit(@Param("agentId") agentId: string) {
+    return this.agentVcsService.disconnectAgentRemote(agentId);
   }
 
   @Post("/agents/:agentId/git/init")

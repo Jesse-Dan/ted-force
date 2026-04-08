@@ -30,6 +30,10 @@ export class OrganizationService {
     return this.organizationRepository.findByUserId(userId);
   }
 
+  async listOrganizations() {
+    return this.organizationRepository.findAllForBilling();
+  }
+
   async getOrganization(organizationId: string) {
     return this.organizationRepository.findById(organizationId);
   }
@@ -79,6 +83,9 @@ export class OrganizationService {
       isEnabled: payload.isEnabled ?? payload.enabled ?? false,
       enabledMessage: payload.enabledMessage ?? null,
       plan: payload.plan ?? OrganizationPlan.FREE,
+      metadata: {
+        buildType: payload.buildType ?? "none",
+      },
     });
 
     if (ownerUserId) {
@@ -133,6 +140,14 @@ export class OrganizationService {
           ? organization.enabledMessage
           : payload.enabledMessage,
       plan: payload.plan ?? organization.plan,
+      metadata: {
+        ...(organization.metadata ?? {}),
+        ...(payload.buildType === undefined
+          ? {}
+          : {
+              buildType: payload.buildType,
+            }),
+      },
     });
   }
 

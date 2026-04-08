@@ -23,6 +23,9 @@ export class UserAccount extends AuditableEntity {
   @Index()
   lastAccessedOrganizationId?: string | null;
 
+  @Column({ name: "is_platform_admin", type: "boolean", default: false })
+  isPlatformAdmin!: boolean;
+
   @OneToMany(() => OrganizationMembership, (membership) => membership.user)
   memberships!: OrganizationMembership[];
 }

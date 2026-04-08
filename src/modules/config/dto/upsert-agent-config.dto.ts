@@ -3,11 +3,6 @@ import { ModelFamily } from "../../../entities/enums/model-family.enum";
 import { ModelProvider } from "../../../entities/enums/model-provider.enum";
 
 export class UpsertAgentConfigDto {
-  @Validate({ name: "apiKey" })
-  @Validators.IsOptional()
-  @Validators.IsString()
-  apiKey?: string | null;
-
   @Validate({ name: "systemApiKey" })
   @Validators.IsOptional()
   @Validators.IsString()
@@ -60,5 +55,45 @@ export class UpsertAgentConfigDto {
     requireCreditAccount?: boolean;
     maxSpendPerRunUsd?: number;
     maxSpendPerMonthUsd?: number;
+  } | null;
+
+  @Validate({ name: "sdkRateLimits" })
+  @Validators.IsOptional()
+  @Validators.IsObject()
+  sdkRateLimits?: {
+    requestsPerMinute?: number;
+    burstCapacity?: number;
+    adaptiveThrottling?: boolean;
+    blockAnonymousTraffic?: boolean;
+  } | null;
+
+  @Validate({ name: "sdkSecurity" })
+  @Validators.IsOptional()
+  @Validators.IsObject()
+  sdkSecurity?: {
+    allowedIpAddresses?: string[];
+  } | null;
+
+  @Validate({ name: "sdkWidget" })
+  @Validators.IsOptional()
+  @Validators.IsObject()
+  sdkWidget?: {
+    widgetKey?: string | null;
+    allowedDomains?: string[];
+    embedEnabled?: boolean;
+    theme?: {
+      primaryAccentToken?: string;
+      launcherPosition?: "bottom-right" | "bottom-left" | "top-right" | "top-left";
+      greetingPrompt?: string;
+      launcherLabel?: string;
+      borderRadius?: number;
+      backgroundColor?: string;
+      surfaceColor?: string;
+      textColor?: string;
+      mutedTextColor?: string;
+      showBranding?: boolean;
+      proactiveGreeting?: boolean;
+      autoOpenOnReturn?: boolean;
+    } | null;
   } | null;
 }

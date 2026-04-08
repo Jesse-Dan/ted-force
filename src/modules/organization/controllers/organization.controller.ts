@@ -23,6 +23,11 @@ export class OrganizationController {
   @Autowired()
   private organizationService!: OrganizationService;
 
+  @Get()
+  async listOrganizations() {
+    return this.organizationService.listOrganizations();
+  }
+
   @Get("/user/:userId")
   async getUserOrganizations(@Param("userId") userId: string) {
     return this.organizationService.getUserOrganizations(userId);

@@ -68,7 +68,11 @@ export class AgentController {
     @Param("agentId") agentId: string,
     @Body() body: UpdateAgentStatusDto,
   ) {
-    return this.agentService.updateAgentStatus(agentId, body.status);
+    return this.agentService.updateAgentStatus(
+      agentId,
+      body.status,
+      body.blockReason,
+    );
   }
 
   @Delete("/:agentId")

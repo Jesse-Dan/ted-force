@@ -201,7 +201,11 @@ export class PublicService {
   }
 
   async getDomains() {
-    return this.publicDomainRepository.listAll();
+    return this.publicDomainRepository.listDomainAgents();
+  }
+
+  async getDomainTemplates() {
+    return this.publicDomainRepository.listTemplates();
   }
 
   async getStatus() {

@@ -1,10 +1,28 @@
-import { RequiredString, Validate, Validators } from "fragment-ts";
+import { Validate, Validators } from "fragment-ts";
 
 export type RuntimeReasoningLevel = "none" | "low" | "medium" | "high";
 
+export class AgentRuntimeLocalToolDto {
+  @Validate({ name: "name" })
+  @Validators.IsOptional()
+  @Validators.IsString()
+  name?: string;
+
+  @Validate({ name: "description" })
+  @Validators.IsOptional()
+  @Validators.IsString()
+  description?: string;
+
+  @Validate({ name: "inputSchema" })
+  @Validators.IsOptional()
+  inputSchema?: Record<string, unknown>;
+}
+
 export class AgentRuntimeRequestDto {
-  @RequiredString(1, { name: "input", required: true })
-  input!: string;
+  @Validate({ name: "input" })
+  @Validators.IsOptional()
+  @Validators.IsString()
+  input?: string;
 
   @Validate({ name: "sessionId" })
   @Validators.IsOptional()
@@ -55,4 +73,14 @@ export class AgentRuntimeRequestDto {
   @Validators.IsOptional()
   @Validators.IsString()
   instanceId?: string;
+
+  @Validate({ name: "localTools" })
+  @Validators.IsOptional()
+  @Validators.IsArray()
+  localTools?: AgentRuntimeLocalToolDto[];
+
+  @Validate({ name: "continuationMessages" })
+  @Validators.IsOptional()
+  @Validators.IsArray()
+  continuationMessages?: Record<string, unknown>[];
 }

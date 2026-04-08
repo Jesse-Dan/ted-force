@@ -15,6 +15,10 @@ export class AuthService {
     return this.userAccountRepository.findById(userId);
   }
 
+  async listUsers() {
+    return this.userAccountRepository.listAll();
+  }
+
   async getUserByEmail(email: string) {
     return this.userAccountRepository.findByEmail(email);
   }
@@ -42,16 +46,26 @@ export class AuthService {
         payload.lastAccessedOrganizationId === undefined
           ? existing?.lastAccessedOrganizationId
           : payload.lastAccessedOrganizationId,
+      isPlatformAdmin:
+        payload.isPlatformAdmin === undefined
+          ? existing?.isPlatformAdmin ?? false
+          : payload.isPlatformAdmin,
     });
   }
 
   async getRole(userId: string, organizationId: string) {
+    const user = userId
+      ? await this.userAccountRepository.findById(userId)
+      : null;
+    const platformAdmin = Boolean(user?.isPlatformAdmin);
+
     if (!userId || !organizationId) {
       return {
         app_id: "tuul",
         app_name: "tuul",
         role: "member",
         status: "active",
+        platformAdmin,
         organizationId: organizationId || null,
         membership: null,
         permissions: {
@@ -88,6 +102,7 @@ export class AuthService {
       app_name: "tuul",
       role: normalizedRole,
       status: membership ? "active" : "inactive",
+      platformAdmin,
       organizationId,
       membership,
       permissions: {

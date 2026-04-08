@@ -153,6 +153,11 @@ export class AgentGitController {
     return this.agentVcsService.updateAgentRemote(agentId, body as any);
   }
 
+  @Delete("/agents/:agentId/git/remote")
+  async disconnectRemote(@Param("agentId") agentId: string) {
+    return this.agentVcsService.disconnectAgentRemote(agentId);
+  }
+
   @Post("/agents/:agentId/git/remote/use-organization")
   async useOrganizationRemote(
     @Param("agentId") agentId: string,

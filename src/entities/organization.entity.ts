@@ -27,6 +27,7 @@ export interface OrganizationGitRemoteConfig {
 }
 
 export interface OrganizationMetadata {
+  buildType?: "none" | "digitwhale" | null;
   gitRemote?: OrganizationGitRemoteConfig | null;
 }
 

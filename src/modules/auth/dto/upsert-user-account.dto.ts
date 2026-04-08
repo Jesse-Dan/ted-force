@@ -26,4 +26,9 @@ export class UpsertUserAccountDto {
   @Validators.IsOptional()
   @Validators.IsString()
   lastAccessedOrganizationId?: string;
+
+  @Validate({ name: "isPlatformAdmin" })
+  @Validators.IsOptional()
+  @Validators.IsBoolean()
+  isPlatformAdmin?: boolean;
 }

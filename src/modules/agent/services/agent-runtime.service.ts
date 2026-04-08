@@ -1,14 +1,18 @@
-import { generateText, streamText, type ModelMessage } from "ai";
+import { generateText, streamText, type JSONSchema7, type ModelMessage } from "ai";
 import { Autowired, Service } from "fragment-ts";
 import type { Response } from "fragment-ts";
 import type { AgentConversationVersion } from "../../../entities/agent-conversation-version.entity";
 import type { AgentConversation } from "../../../entities/agent-conversation.entity";
 import { ApiCallStatus } from "../../../entities/enums/api-call-status.enum";
+import { AgentStatus } from "../../../entities/enums/agent-status.enum";
 import { AgentBundlingEngine } from "../../../core/ai/engine/agent-bundling.engine";
 import { SseResponsePipe } from "../../../core/ai/sse/sse-response.pipe";
 import { SseWriter } from "../../../core/ai/sse/sse-writer";
 import { LanguageModelResolverService } from "../../../core/ai/services/language-model-resolver.service";
-import { AgentRuntimeRequestDto } from "../dto/agent-runtime-request.dto";
+import {
+  type AgentRuntimeLocalToolDto,
+  AgentRuntimeRequestDto,
+} from "../dto/agent-runtime-request.dto";
 import { AgentRuntimeRepository } from "../repositories/agent-runtime.repository";
 import { AgentRuntimeFileContextService } from "./agent-runtime-file-context.service";
 import { AgentRuntimePersistenceService } from "./agent-runtime-persistence.service";
@@ -55,6 +59,33 @@ export class AgentRuntimeService {
   private agentAwarenessService!: AgentAwarenessService;
 
   private readonly bundlingEngine = new AgentBundlingEngine();
+
+  private buildLocalToolDefinitions(
+    tools: AgentRuntimeLocalToolDto[] | undefined,
+  ): ReturnType<RuntimeToolDefinitionService["buildDefinitions"]> {
+    return (tools ?? [])
+      .map((tool) => {
+        const normalizedName = tool.name?.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+        if (!normalizedName) {
+          return null;
+        }
+
+        return {
+          name: normalizedName,
+          description:
+            tool.description?.trim() || `Client-side tool ${normalizedName}`,
+          inputSchema:
+            tool.inputSchema && typeof tool.inputSchema === "object"
+              ? (tool.inputSchema as JSONSchema7)
+              : {
+                  type: "object",
+                  properties: {},
+                  additionalProperties: false,
+                },
+        };
+      })
+      .filter((tool): tool is NonNullable<typeof tool> => Boolean(tool));
+  }
 
   private toUserFacingRuntimeError(error: unknown) {
     const message =
@@ -369,7 +400,21 @@ export class AgentRuntimeService {
     agentId: string,
     request: AgentRuntimeRequestDto,
   ): Promise<PreparedRuntimeExecution> {
+    const hasInput = typeof request.input === "string" && request.input.trim().length > 0;
+    const hasContinuationMessages =
+      Array.isArray(request.continuationMessages) &&
+      request.continuationMessages.length > 0;
+
+    if (!hasInput && !hasContinuationMessages) {
+      throw new Error(
+        "Runtime request requires either input text or continuation messages.",
+      );
+    }
+
     const agent = await this.runtimeRepository.findAgentOrThrow(agentId);
+    if (agent.status === AgentStatus.BLOCKED) {
+      throw new Error(`Agent ${agentId} is blocked and cannot be used.`);
+    }
     const agentConfig = await this.runtimeRepository.findAgentConfig(agentId);
 
     if (!agentConfig) {
@@ -386,18 +431,21 @@ export class AgentRuntimeService {
       commitHash: request.commitHash,
       instanceId: request.instanceId,
     });
+    const agentConnectors =
+      await this.runtimeRepository.findEnabledAgentConnectors(agentId);
     const conversation = await this.resolveConversation(agent, request);
     const conversationVersion = await this.resolveConversationVersion(conversation);
     const historyMessages = await this.runtimeRepository.findConversationMessages(
       conversation.id,
       conversationVersion.id,
     );
-    const userMessage = this.createUserMessage(request.input);
+    const userMessage = hasInput ? this.createUserMessage(request.input!.trim()) : null;
     const modelMessages = [
       ...historyMessages
         .map((message) => message.modelMessage)
         .filter((message): message is ModelMessage => Boolean(message)),
-      userMessage,
+      ...((request.continuationMessages ?? []) as ModelMessage[]),
+      ...(userMessage ? [userMessage] : []),
     ];
 
     const run = await this.runtimePersistence.createRun({
@@ -407,29 +455,31 @@ export class AgentRuntimeService {
       conversationVersionId: conversationVersion.id,
     });
 
-    const nextUserSequence = historyMessages.length + 1;
+    const nextUserSequence = historyMessages.length + (userMessage ? 1 : 0);
 
-    const persistedUserMessage = await this.runtimePersistence.persistConversationMessage({
-      run,
-      conversation,
-      version: conversationVersion,
-      role: "user",
-      sequence: nextUserSequence,
-      text: request.input,
-      modelMessage: userMessage,
-    });
+    if (userMessage) {
+      const persistedUserMessage = await this.runtimePersistence.persistConversationMessage({
+        run,
+        conversation,
+        version: conversationVersion,
+        role: "user",
+        sequence: historyMessages.length + 1,
+        text: request.input!.trim(),
+        modelMessage: userMessage,
+      });
 
-    await this.runtimeFileContext.linkRequestFilesToMessage({
-      conversationMessage: persistedUserMessage,
-      fileIds: request.fileIds,
-    });
+      await this.runtimeFileContext.linkRequestFilesToMessage({
+        conversationMessage: persistedUserMessage,
+        fileIds: request.fileIds,
+      });
 
-    await this.runtimePersistence.persistRuntimeMessage({
-      run,
-      sessionId: request.sessionId,
-      conversationId: conversation.id,
-      modelMessage: userMessage,
-    });
+      await this.runtimePersistence.persistRuntimeMessage({
+        run,
+        sessionId: request.sessionId,
+        conversationId: conversation.id,
+        modelMessage: userMessage,
+      });
+    }
 
     const capabilityProfile = latestParameters?.capabilityProfile ?? null;
     const platformTools =
@@ -446,8 +496,10 @@ export class AgentRuntimeService {
       capabilityProfile,
       platformTools,
       agentTools,
+      agentConnectors,
       webSearch: request.webSearch,
     });
+    const localToolDefinitions = this.buildLocalToolDefinitions(request.localTools);
 
     const systemPrompt = await this.composeSystemPrompt(
       agent.id,
@@ -482,7 +534,7 @@ export class AgentRuntimeService {
         commitHash: request.commitHash,
         instanceId: request.instanceId,
       },
-      tools: runtimeToolDefinitions,
+      tools: [...runtimeToolDefinitions, ...localToolDefinitions],
       toolChoice:
         capabilityProfile?.capabilityFlags?.functionCalling === false
           ? "none"
@@ -531,7 +583,9 @@ export class AgentRuntimeService {
           input.latestParameters,
           input.fileContext,
         ),
-        messages: [this.createUserMessage(input.request.input)],
+        messages: input.request.input
+          ? [this.createUserMessage(input.request.input)]
+          : [],
         toolCount: input.runtimeToolDefinitions.length,
       });
 
@@ -660,7 +714,7 @@ export class AgentRuntimeService {
       agent,
       conversationId: request.conversationId,
       sessionId: request.sessionId,
-      title: request.input.slice(0, 80),
+      title: (request.input?.trim() || "New conversation").slice(0, 80),
     });
   }
 

@@ -36,4 +36,14 @@ export class UpdateAgentDto {
   @Validators.IsOptional()
   @Validators.IsIn(Object.values(AgentStatus))
   status?: AgentStatus;
+
+  @Validate({ name: "blockReason" })
+  @Validators.IsOptional()
+  @Validators.IsString()
+  blockReason?: string;
+
+  @Validate({ name: "visibility" })
+  @Validators.IsOptional()
+  @Validators.IsIn(["private", "public", "internal", "domain-available"])
+  visibility?: "private" | "public" | "internal" | "domain-available" | null;
 }

@@ -10,11 +10,26 @@ export class UserAccountRepository {
   @InjectRepository(UserAccount)
   private userAccountRepository!: Repository<UserAccount>;
 
+  async listAll(): Promise<UserAccount[]> {
+    return this.userAccountRepository.find({
+      relations: {
+        memberships: {
+          organization: true,
+        },
+      },
+      order: {
+        updatedAt: "DESC",
+      },
+    });
+  }
+
   async findById(userId: string): Promise<UserAccount | null> {
     return this.userAccountRepository.findOne({
       where: { id: userId },
       relations: {
-        memberships: true,
+        memberships: {
+          organization: true,
+        },
       },
     });
   }

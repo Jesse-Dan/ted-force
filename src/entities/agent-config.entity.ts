@@ -15,11 +15,37 @@ export interface RuntimeLimits {
   maxSpendPerMonthUsd?: number;
 }
 
-export interface AccessPolicy {
-  ipWhitelist: string[];
-  allowedOrigins: string[];
-  httpsEnabled: boolean;
-  apiKeyRotationDays: number;
+export interface SdkRateLimitPolicy {
+  requestsPerMinute: number;
+  burstCapacity: number;
+  adaptiveThrottling: boolean;
+  blockAnonymousTraffic: boolean;
+}
+
+export interface SdkSecurityPolicy {
+  allowedIpAddresses: string[];
+}
+
+export interface SdkWidgetThemeConfig {
+  primaryAccentToken: string;
+  launcherPosition: "bottom-right" | "bottom-left" | "top-right" | "top-left";
+  greetingPrompt: string;
+  launcherLabel: string;
+  borderRadius: number;
+  backgroundColor: string;
+  surfaceColor: string;
+  textColor: string;
+  mutedTextColor: string;
+  showBranding: boolean;
+  proactiveGreeting: boolean;
+  autoOpenOnReturn: boolean;
+}
+
+export interface SdkWidgetConfig {
+  widgetKey: string | null;
+  allowedDomains: string[];
+  embedEnabled: boolean;
+  theme: SdkWidgetThemeConfig;
 }
 
 export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
@@ -33,11 +59,37 @@ export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
   maxSpendPerMonthUsd: 250,
 };
 
-export const DEFAULT_ACCESS_POLICY: AccessPolicy = {
-  ipWhitelist: [],
-  allowedOrigins: [],
-  httpsEnabled: true,
-  apiKeyRotationDays: 0,
+export const DEFAULT_SDK_RATE_LIMIT_POLICY: SdkRateLimitPolicy = {
+  requestsPerMinute: 120,
+  burstCapacity: 300,
+  adaptiveThrottling: true,
+  blockAnonymousTraffic: false,
+};
+
+export const DEFAULT_SDK_SECURITY_POLICY: SdkSecurityPolicy = {
+  allowedIpAddresses: [],
+};
+
+export const DEFAULT_SDK_WIDGET_THEME: SdkWidgetThemeConfig = {
+  primaryAccentToken: "--tuul-accent-500",
+  launcherPosition: "bottom-right",
+  greetingPrompt: "Hi, I'm here to help. What can I do for you today?",
+  launcherLabel: "Chat with us",
+  borderRadius: 20,
+  backgroundColor: "#09090b",
+  surfaceColor: "#18181b",
+  textColor: "#fafafa",
+  mutedTextColor: "#a1a1aa",
+  showBranding: true,
+  proactiveGreeting: true,
+  autoOpenOnReturn: false,
+};
+
+export const DEFAULT_SDK_WIDGET_CONFIG: SdkWidgetConfig = {
+  widgetKey: null,
+  allowedDomains: [],
+  embedEnabled: false,
+  theme: DEFAULT_SDK_WIDGET_THEME,
 };
 
 @Entity("agent_configs")
@@ -50,9 +102,6 @@ export class AgentConfig extends AuditableEntity {
   })
   @JoinColumn({ name: "agent_id" })
   agent!: Agent;
-
-  @Column({ name: "api_key", type: "varchar", length: 255, nullable: true })
-  apiKey?: string | null;
 
   @Column({ name: "system_api_key", type: "varchar", length: 255, nullable: true })
   systemApiKey?: string | null;
@@ -99,9 +148,23 @@ export class AgentConfig extends AuditableEntity {
   runtimeLimits?: RuntimeLimits | null;
 
   @Column({
-    name: "access_policy",
+    name: "sdk_rate_limits",
     type: "json",
     nullable: true,
   })
-  accessPolicy?: AccessPolicy | null;
+  sdkRateLimits?: SdkRateLimitPolicy | null;
+
+  @Column({
+    name: "sdk_security",
+    type: "json",
+    nullable: true,
+  })
+  sdkSecurity?: SdkSecurityPolicy | null;
+
+  @Column({
+    name: "sdk_widget",
+    type: "json",
+    nullable: true,
+  })
+  sdkWidget?: SdkWidgetConfig | null;
 }
