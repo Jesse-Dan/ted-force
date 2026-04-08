@@ -10,8 +10,8 @@ RUN npm install
 COPY . .
 
 # Build TypeScript
-RUN frg build
+RUN npm run build
 
-EXPOSE 1110
+EXPOSE 3000
 
 CMD ["npm", "start"]
