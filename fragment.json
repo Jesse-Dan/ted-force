@@ -9,7 +9,7 @@
     "username": "${DATABASE_USER}",
     "password": "${DATABASE_PASSWORD}",
     "database": "${DATABASE_NAME}",
-    "synchronize": true,
+    "synchronize": "${DATABASE_SYNCHRONIZE}",
     "logging": false,
     "entities": [
       "src/**/*.entity.ts"
