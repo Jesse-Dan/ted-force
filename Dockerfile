@@ -12,6 +12,6 @@ COPY . .
 # Build TypeScript
 RUN npm run build
 
-EXPOSE 3000
+EXPOSE 1110
 
 CMD ["npm", "start"]
